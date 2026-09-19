@@ -1,22 +1,24 @@
-# DEV@Deakin — HD1 Feature Specification
+# DEV@Deakin — HD1 Feature Specification (v3)
 
-## Overview
-This document specifies the additional features built for HD1, extending the
-existing DEV@Deakin platform (Pass, Credit, Distinction tasks). Each feature
-is designed to be individually functional, while also interconnecting to form
-a coherent platform experience: social interactions generate activity data,
-gamification interprets that activity into recognition, and the AI assistant
-helps users navigate both.
+## Direction
+
+One main feature - the **AI Assistant** - built to a high standard of depth and
+polish. Everything else in this document exists **only to serve that feature**:
+each supporting piece is deliberately small in scope, but demonstrates a
+different kind of technical capability (real-time data, state/credit logic,
+advanced hooks) tied back to the same core system. The intent is to show
+depth on one thing, with enough surrounding integration to prove the depth
+is transferable - not to spread effort thin across three unrelated systems.
 
 ---
 
-## Feature 1: AI Assistant (RAG-based Chatbot)
+## Main Feature: AI Assistant (RAG-based Chatbot)
 
 ### Purpose
-Provide users with an interactive assistant that can answer questions about
-the site owner (author/profile), about DEV@Deakin as a platform, and general
-publicly-available information about Deakin University — while deferring
-anything outside that scope to a human contact flow.
+An interactive assistant that answers questions about the site owner, about
+DEV@Deakin as a platform, and general public Deakin University information, 
+refusing anything outside that scope, and escalating to a human when it
+can't answer confidently.
 
 ### Scope
 - Answers restricted to three domains only:
@@ -27,8 +29,8 @@ anything outside that scope to a human contact flow.
 - Falls back to a human contact flow when it cannot answer confidently
 
 ### Technical Approach
-- **Corpus**: hand-written by the developer (not scraped), covering the three
-  domains above
+- **Corpus**: hand-written by the developer (not scraped), covering the
+  three domains above
 - **Retrieval-Augmented Generation (RAG)**:
   - Corpus is chunked and embedded
   - User query is embedded and matched against stored chunks via similarity
@@ -39,89 +41,44 @@ anything outside that scope to a human contact flow.
     answer
 - **Backend-driven**: all retrieval and LLM API calls happen server-side; no
   API keys or corpus logic exposed to the frontend
-- **Human fallback**: unanswered/refused queries surface a prompt linking to
-  a contact flow (aligned with the "user control and freedom" UX principle —
-  users are never left stuck)
-
-### Optional Extensions
-- Gate usage by membership plan (e.g. limited queries for Free users,
-  unlimited for Paid users)
-- Extend the corpus to include live platform data (e.g. a user's own
-  gamification stats), turning the assistant into a personalized guide
-  rather than a static FAQ
+- **Human fallback**: unanswered/refused/flagged queries surface a prompt
+  linking to a contact flow (see Supporting Feature A), aligned with the
+  "user control and freedom" UX principle
 
 ---
 
-## Feature 2: Social Layer (Likes, Comments, Follows)
+## Supporting Feature A: Chat Flagging
 
 ### Purpose
-Extend the existing Post/Browse Posts system into a social experience,
-allowing users to interact with each other's content and build connections,
-consistent with DEV@Deakin's identity as a developer community platform.
+Gives users explicit, manual control over the human-escalation flow,
+instead of leaving it purely automatic. Directly reinforces the Assistant's
+"knows what it doesn't know" behavior by letting a user override it.
 
 ### Scope
-- **Likes**: users can like/unlike a post
-- **Comments**: users can comment on a post
-- **Follow**: users can follow/unfollow other users
-- **Following Feed**: an alternate view of Browse Posts, filtered to only
-  show posts from followed users
-
-### Technical Approach
-- **Data modelling**: likes, comments, and follows stored as Firestore
-  subcollections/reference collections, linked to user and post IDs
-- **Access control**: Firestore Security Rules enforce who can read/write
-  each interaction (e.g. must be logged in to like/comment/follow; cannot
-  like the same post twice)
-- **Real-time updates**: `onSnapshot` listeners so like counts, comments, and
-  follow status update live across sessions without a page refresh
-- **Optimistic UI updates**: like/comment actions reflect instantly in the
-  UI before Firestore confirms, rolling back on failure
-- **Shared state**: `useContext` used to share current user/follow state
-  across components without prop drilling
-
-### Dependencies
-- Requires D2 (Browse Posts Page) as its data foundation
-- Feeds activity data into Feature 3 (Gamification)
+- Users can flag any chatbot response (e.g. "unhelpful", "inaccurate",
+  "needs a human")
+- Flagging a message triggers the same human-contact fallback used for
+  low-confidence answers
+- Flagged threads are stored for later review, and optionally used to
+  refine the corpus over time
 
 ---
 
-## Feature 3: Gamification (Contributor Score & Achievements)
+## Supporting Feature B: Daily Missions & Credits
 
 ### Purpose
-Introduce an incentive and recognition layer that rewards consistent,
-well-received contribution, addressing the lack of any retention/quality
-incentive in the base platform. Inspired by rank/progression systems in
-rhythm games (e.g. maimai's rate/rank mechanics) and reputation systems used
-by platforms like Stack Overflow.
+Gates and rewards Assistant usage, giving the chatbot a real usage economy
+tied to the existing Free/Paid membership system, rather than a flat
+per-plan query cap.
 
 ### Scope
-- **Contributor Score**: a computed score derived from a user's posts,
-  weighted by engagement (likes/comments) rather than raw post count
-- **Achievements/Badges**: unlocked when a user meets defined activity
-  thresholds (e.g. consistent posting, topic-specific contribution volume)
-- **Leaderboard**: ranks users by score, optionally filterable by
-  tag/timeframe
-- **Streaks** (optional): rewards consistent activity over time
-
-### Technical Approach
-- **Scoring algorithm**: a defined formula combining post engagement,
-  frequency, and possibly time-decay — implemented as a pure, testable
-  function
-- **Achievement rules engine**: a set of conditions evaluated against user
-  activity to determine badge unlocks
-- **State management**: `useReducer` for coordinated score/badge state
-  transitions; `useMemo` for expensive derived calculations (e.g. rank
-  sorting); a custom hook (e.g. `useAchievements`) encapsulating the fetch →
-  compute → unlock logic
-- **Time-based mechanics**: scheduled/periodic recalculation (e.g. daily or
-  weekly) for leaderboard resets or streak evaluation
-
-### Dependencies
-- Requires Feature 2 (Social) as its primary data input (likes/comments as
-  scoring signals)
-- Distinct from Feature 2 in that it introduces its own computation layer
-  (scoring/rules engine) and progression-focused UI, rather than
-  user-to-user interaction
+- Small daily missions (e.g. log in, create a post, engage with a tutorial)
+  earn credits
+- Credits are spent on Assistant queries beyond a user's free daily
+  allotment
+- Free-plan users get a small baseline allotment; Paid-plan users get more
+- Missions reset daily; an optional streak counter rewards consecutive days
+  completed
 
 ---
 
@@ -129,9 +86,20 @@ by platforms like Stack Overflow.
 
 | From | To | Relationship |
 |---|---|---|
-| Feature 2 (Social) | Feature 3 (Gamification) | Likes/comments/follows are the raw activity data the scoring algorithm consumes |
-| Feature 3 (Gamification) | Feature 1 (Chatbot) | User's score/rank/badges can be surfaced as retrievable facts, letting the assistant answer personalized questions (e.g. "what's my rank?") |
-| Feature 1 (Chatbot) | Feature 2 (Social) | Assistant can explain how engagement/visibility mechanics work, guiding users toward social features |
-| Membership (D1) | All three | Free/Paid plan status can gate chatbot query limits, scoring weight, and content visibility, tying new features back into the existing subscription system |
+| Supporting Feature B (Missions/Credits) | Main Feature (Assistant) | Credits directly gate how many Assistant queries a user can run per day |
+| Supporting Feature A (Flagging) | Main Feature (Assistant) | Flags are the manual trigger for the human-contact fallback |
+| Supporting Feature A (Flagging) | Supporting Feature B (Missions) | *Optional*: resolving a flagged thread could itself be a mission, closing the loop |
+| Membership (D1) | Main Feature & Supporting Feature B | Plan status sets the user's baseline daily credit allotment |
 
 ---
+
+## Advanced React Hooks
+
+| Hook | Where it's used | Why it fits |
+|---|---|---|
+| `useContext` | Shared user/session/credit-balance state across the chatbot, missions, and flagging UI | Avoids prop-drilling session/credit state through every component that needs it |
+| `useOptimistic` | Flagging a message; deducting a credit when a query is sent | UI updates instantly, before Firestore/backend confirms, rolling back on failure |
+| `useMemo` | Deriving "today's remaining credits" or filtering the missions list by completion state | Avoids recomputing derived values on every render |
+| `useReducer` | Mission/credit state transitions (mission completed → credit added → daily reset) | Several related state transitions belong together, rather than as independent `useState` calls |
+| `useTransition` | Keeping the chat input responsive while a RAG query is in flight | Marks the response-rendering update as non-urgent so typing/input never feels blocked |
+| Custom hook (e.g. `useChatSession` or `useDailyMissions`) | Encapsulates fetch → compute → update logic for the chat session or the missions/credits system | Shows sophisticated integration — abstracting a full flow, not just calling a hook once |
