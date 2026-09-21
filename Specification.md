@@ -1,4 +1,4 @@
-# DEV@Deakin — HD1 Feature Specification (v3)
+# DEV@Deakin - HD1 Feature Specification (v3)
 
 ## Direction
 
@@ -56,7 +56,7 @@ instead of leaving it purely automatic. Directly reinforces the Assistant's
 
 ### Scope
 - Users can flag any chatbot response (e.g. "unhelpful", "inaccurate",
-  "needs a human")
+  "needs a human - connected to a currently online account"...)
 - Flagging a message triggers the same human-contact fallback used for
   low-confidence answers
 - Flagged threads are stored for later review, and optionally used to
