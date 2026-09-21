@@ -1,4 +1,4 @@
-# DEV@Deakin - HD1 Feature Specification (v3)
+# DEV@Deakin - HD1 Feature Specification (v4)
 
 ## Direction
 
@@ -16,7 +16,7 @@ is transferable - not to spread effort thin across three unrelated systems.
 
 ### Purpose
 An interactive assistant that answers questions about the site owner, about
-DEV@Deakin as a platform, and general public Deakin University information, 
+DEV@Deakin as a platform, and general public Deakin University information,
 refusing anything outside that scope, and escalating to a human when it
 can't answer confidently.
 
@@ -44,6 +44,17 @@ can't answer confidently.
 - **Human fallback**: unanswered/refused/flagged queries surface a prompt
   linking to a contact flow (see Supporting Feature A), aligned with the
   "user control and freedom" UX principle
+- **Lazy loading**: `<ChatPanel>` is lazy-loaded via `React.lazy()` so the
+  assistant bundle is not fetched until the user opens the chat
+- **Suspense per response bubble**: each AI response is wrapped in its own
+  `<Suspense>` boundary with a skeleton fallback, so the input and previous
+  messages stay fully interactive while a RAG query is in flight; `useTransition`
+  marks response rendering as non-urgent so the text input never feels blocked
+- **Pagination**: chat history loads in pages of 20 messages; older messages
+  fetch on scroll-to-top with their own `<Suspense>` boundary so the current
+  conversation is never blocked by history loading
+- **Optimistic message send**: `useOptimistic` immediately appends the user's
+  message with a `"sending"` status before the backend confirms; rolls back on error
 
 ---
 
@@ -61,6 +72,8 @@ instead of leaving it purely automatic. Directly reinforces the Assistant's
   low-confidence answers
 - Flagged threads are stored for later review, and optionally used to
   refine the corpus over time
+- **Optimistic flag state**: `useOptimistic` immediately applies a `"flagged"`
+  status to the message bubble before Firestore confirms; rolls back on failure
 
 ---
 
@@ -79,6 +92,13 @@ per-plan query cap.
 - Free-plan users get a small baseline allotment; Paid-plan users get more
 - Missions reset daily; an optional streak counter rewards consecutive days
   completed
+- **Lazy loading**: `<MissionsPanel>` is lazy-loaded (`React.lazy`) with a
+  `<Suspense>` skeleton so it does not add to initial page load cost
+- **Pagination**: missions list renders in pages of 5; pagination state lives
+  inside `useReducer` alongside completion state
+- **Optimistic credit update**: completing a mission uses `useOptimistic` to
+  immediately apply a `"completed"` status to the mission and increment the
+  credit balance in the header before the backend confirms; rolls back on failure
 
 ---
 
@@ -98,8 +118,9 @@ per-plan query cap.
 | Hook | Where it's used | Why it fits |
 |---|---|---|
 | `useContext` | Shared user/session/credit-balance state across the chatbot, missions, and flagging UI | Avoids prop-drilling session/credit state through every component that needs it |
-| `useOptimistic` | Flagging a message; deducting a credit when a query is sent | UI updates instantly, before Firestore/backend confirms, rolling back on failure |
+| `useOptimistic` | Three distinct uses: (1) sending a message - optimistically appends it with `status: "sending"` before the backend round-trip; (2) flagging a response - optimistically applies `status: "flagged"` to the bubble before Firestore confirms; (3) completing a mission - optimistically applies `status: "completed"` and increments the credit balance before the backend confirms. All three roll back to the previous state on failure | Covers the three main user actions that must feel instant despite async operations, with clean rollback in each case |
 | `useMemo` | Deriving "today's remaining credits" or filtering the missions list by completion state | Avoids recomputing derived values on every render |
-| `useReducer` | Mission/credit state transitions (mission completed → credit added → daily reset) | Several related state transitions belong together, rather than as independent `useState` calls |
+| `useReducer` | Mission/credit state transitions (mission completed → credit added → daily reset); pagination state in the missions list | Several related state transitions belong together, rather than as independent `useState` calls |
 | `useTransition` | Keeping the chat input responsive while a RAG query is in flight | Marks the response-rendering update as non-urgent so typing/input never feels blocked |
-| Custom hook (e.g. `useChatSession` or `useDailyMissions`) | Encapsulates fetch → compute → update logic for the chat session or the missions/credits system | Shows sophisticated integration — abstracting a full flow, not just calling a hook once |
+| `React.lazy` + `<Suspense>` | `<ChatPanel>` and `<MissionsPanel>` lazy-loaded on demand; per-bubble Suspense boundary during RAG responses; paginated history loads | Splits the bundle; scopes loading states to exactly what's pending without freezing the rest of the UI |
+| Custom hook (`useChatSession` / `useDailyMissions`) | Encapsulates fetch → compute → update logic for the chat session or the missions/credits system | Shows sophisticated integration — abstracting a full flow, not just calling a hook once |
