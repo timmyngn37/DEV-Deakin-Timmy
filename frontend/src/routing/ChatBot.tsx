@@ -1,3 +1,15 @@
+/**
+ * ChatBot.tsx
+ * ------------------------------------------------------------------
+ * This file contains the main React component for the DEV@Deakin AI Assistant chatbot interface.
+ * It implements a terminal-style chat interface with features such as:
+ * - Domain-bounded AI responses (Author, Platform, Deakin University)
+ * - Daily missions and credit economy system
+ * - Flagging and escalation of unhelpful or inaccurate responses
+ * - Responsive layout with sidebar for missions and rewards
+ * ------------------------------------------------------------------
+ */
+
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
