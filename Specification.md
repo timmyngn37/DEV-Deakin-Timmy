@@ -29,8 +29,9 @@ can't answer confidently.
 - Falls back to a human contact flow when it cannot answer confidently
 
 ### Technical Approach
-- **Corpus**: hand-written by the developer (not scraped), covering the
-  three domains above
+- **Corpus**: curated and written by the developer (not scraped), covering the
+  three domains above. Content may be maintained as approved text or imported
+  from developer-supplied PDF files through a protected backend ingestion route.
 - **Retrieval-Augmented Generation (RAG)**:
   - Corpus is chunked and embedded
   - User query is embedded and matched against stored chunks via similarity
@@ -41,6 +42,13 @@ can't answer confidently.
     answer
 - **Backend-driven**: all retrieval and LLM API calls happen server-side; no
   API keys or corpus logic exposed to the frontend
+- **Corpus ingestion**:
+  - An authenticated developer/admin can upload an approved PDF to the backend
+  - The backend extracts text, rejects empty or unsupported files, chunks the
+    content, generates embeddings, and stores the chunks in the vector database
+  - Public users cannot upload documents or directly modify the assistant corpus
+  - Uploads are size-limited and processed without exposing API keys or raw
+    database credentials to the frontend
 - **Human fallback**: unanswered/refused/flagged queries surface a prompt
   linking to a contact flow (see Supporting Feature A), aligned with the
   "user control and freedom" UX principle
