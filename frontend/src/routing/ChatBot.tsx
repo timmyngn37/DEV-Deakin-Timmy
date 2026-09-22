@@ -10,7 +10,7 @@
  * ------------------------------------------------------------------
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
@@ -104,9 +104,10 @@ const INITIAL_MISSIONS: IMissionItem[] = [
 ]
 
 function ChatBot() {
-    const { user } = useAuth()
+    const { user, token } = useAuth()
     const [messages, setMessages] = useState<IDisplayMessage[]>(INITIAL_MESSAGES)
     const [inputText, setInputText] = useState('')
+    const [isSending, setIsSending] = useState(false)
     const [isSidebarOpen, setIsSidebarOpen] = useState(true)
     const [missions, setMissions] = useState<IMissionItem[]>(INITIAL_MISSIONS)
     const [availableCredits, setAvailableCredits] = useState(5)
@@ -118,19 +119,83 @@ function ChatBot() {
     const [flagNotes, setFlagNotes] = useState('')
     const [flagSuccessToast, setFlagSuccessToast] = useState('')
 
+    useEffect(() => {
+        if (!token) return
+
+        let cancelled = false
+
+        const loadChatHistory = async () => {
+            try {
+                const response = await fetch('http://localhost:3000/chat/history', {
+                    headers: { Authorization: `Bearer ${token}` },
+                })
+                const data = await response.json()
+
+                if (!response.ok) {
+                    throw new Error(data.message || 'Unable to load chat history.')
+                }
+
+                if (cancelled || !Array.isArray(data.history) || data.history.length === 0) return
+
+                const storedMessages: IDisplayMessage[] = data.history.flatMap((turn: {
+                    id: string
+                    userMessage: string
+                    assistantMessage: string
+                    createdAt: string
+                }) => {
+                    const timestamp = new Date(turn.createdAt).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                    })
+
+                    return [
+                        {
+                            id: `${turn.id}-user`,
+                            role: 'user' as const,
+                            content: turn.userMessage,
+                            timestamp,
+                        },
+                        {
+                            id: `${turn.id}-assistant`,
+                            role: 'assistant' as const,
+                            content: turn.assistantMessage,
+                            timestamp,
+                            domain: 'platform' as const,
+                            isFlagged: false,
+                        },
+                    ]
+                })
+
+                setMessages(storedMessages)
+            } catch (error) {
+                console.error('Chat history error:', error)
+            }
+        }
+
+        loadChatHistory()
+        return () => {
+            cancelled = true
+        }
+    }, [token])
+
     // Copy to clipboard helper
     const handleCopy = (text: string) => {
         navigator.clipboard.writeText(text)
         alert('Copied message to clipboard!')
     }
 
-    // Handle user sending a new message in the UI
-    const handleSendMessage = (e: { preventDefault: () => void }) => {
+    // Send a chat turn to the backend, which stores it under the authenticated user.
+    const handleSendMessage = async (e: { preventDefault: () => void }) => {
         e.preventDefault()
         const text = inputText.trim()
         if (!text) return
 
-        if (availableCredits <= 0) {
+        if (!token) {
+            alert('Please log in before using the assistant.')
+            return
+        }
+
+        if (availableCredits <= 0 || isSending) {
             alert("You don't have enough credits to send a message. Complete daily missions or upgrade to Paid!")
             return
         }
@@ -150,19 +215,42 @@ function ChatBot() {
         setAvailableCredits((prev) => Math.max(0, prev - 1))
         setInputText('')
 
-        // Simulate simulated assistant UI response
-        setTimeout(() => {
+        setIsSending(true)
+        try {
+            const response = await fetch('http://localhost:3000/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({ message: text }),
+            })
+
+            const contentType = response.headers.get('content-type') ?? ''
+            const responseBody = await response.text()
+            const data = contentType.includes('application/json')
+                ? JSON.parse(responseBody)
+                : { message: `Chat backend returned ${response.status} ${response.statusText}. Restart the backend server on port 3000.` }
+            if (!response.ok) {
+                throw new Error(data.message || 'Unable to send chat message.')
+            }
+
             const botMsg: IDisplayMessage = {
                 id: `msg-${Date.now() + 1}`,
                 role: 'assistant',
-                content: `Thank you for your question: "${text}".\n\nThis assistant is strictly bounded to Timmy Nguyen, DEV@Deakin, and Deakin University. If you find this simulated response incomplete or unsatisfactory, you can use the "Flag Response" button below to escalate to Timmy.`,
+                content: data.message,
                 timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                 domain: 'platform',
                 confidence: 91,
                 isFlagged: false,
             }
             setMessages((prev) => [...prev, botMsg])
-        }, 600)
+        } catch (error) {
+            setAvailableCredits((prev) => prev + 1)
+            alert(error instanceof Error ? error.message : 'Unable to send chat message.')
+        } finally {
+            setIsSending(false)
+        }
     }
 
     // Trigger flagging modal
@@ -424,17 +512,14 @@ function ChatBot() {
                                 <button
                                     type="submit"
                                     className="chat-send-btn"
-                                    disabled={!inputText.trim() || availableCredits <= 0}
+                                    disabled={!inputText.trim() || availableCredits <= 0 || isSending}
                                 >
-                                    <span>Send</span>
+                                    <span>{isSending ? 'Sending...' : 'Send'}</span>
                                     <span className="cost-tag">(1 ⚡)</span>
                                 </button>
                             </div>
 
                             <div className="input-helper-bar">
-                                <span>
-                                    Scope bounded to: <strong>Author</strong> • <strong>Platform</strong> • <strong>Deakin Uni</strong>
-                                </span>
                                 <span>
                                     Cost: 1 Credit/query • {availableCredits} remaining
                                 </span>

@@ -60,6 +60,7 @@ app.use(express.urlencoded({ extended: true })); // parses form-encoded bodies (
 const apiKey = process.env.SENDGRID_API_KEY?.trim();
 const fromEmail = process.env.SENDGRID_FROM_EMAIL?.trim();
 const jwtSecret = process.env.JWT_SECRET?.trim();
+const googleApiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim();
 
 // Startup diagnostics: confirms required env vars are present without
 // ever printing their actual values (avoids leaking secrets to logs).
@@ -67,6 +68,7 @@ console.log('SendGrid API key exists:', !!apiKey);
 console.log('API key starts with SG.:', apiKey?.startsWith('SG.'));
 console.log('Sender email exists:', !!fromEmail);
 console.log('JWT secret exists:', !!jwtSecret);
+console.log('Google Generative AI API key exists:', !!googleApiKey);
 console.log('Firestore connected:', !!db);
 
 if (!apiKey) {
@@ -352,6 +354,99 @@ app.post('/login', authLimiter, async (req, res) => {
     } catch (error) {
         console.error('Error during login:', error);
         res.status(500).json({ message: 'Something went wrong, please try again.' });
+    }
+});
+
+/**
+ * POST /chat
+ * Generates one non-RAG AI response and stores the authenticated user's
+ * chat turn in Firestore. RAG retrieval will be added later.
+ * Body: { message }
+ */
+app.post('/chat', authenticateToken, async (req, res) => {
+    if (!db) {
+        return res.status(500).json({ message: 'Server database configuration is missing.' });
+    }
+
+    const message = typeof req.body.message === 'string' ? req.body.message.trim() : '';
+    if (!message) {
+        return res.status(400).json({ message: 'Chat message is required.' });
+    }
+
+    if (message.length > 2000) {
+        return res.status(400).json({ message: 'Chat message is too long.' });
+    }
+
+    try {
+        if (!googleApiKey) {
+            return res.status(500).json({ message: 'Google Generative AI API key is missing from the server configuration.' });
+        }
+
+        const { generateText } = await import('ai');
+        const { google } = await import('@ai-sdk/google');
+        let assistantMessage;
+        try {
+            const result = await generateText({
+                model: google('gemini-3.6-flash'),
+                system: 'You are the DEV@Deakin assistant. Answer helpfully about Timmy Nguyen, the DEV@Deakin platform, and Deakin University. For now there is no retrieval context, so be honest when you are unsure and do not invent personal facts. Keep responses concise.',
+                prompt: message,
+            });
+            assistantMessage = result.text;
+        } catch (error) {
+            console.error('Gemini response error:', error);
+            return res.status(502).json({ message: 'Gemini could not generate a response.' });
+        }
+
+        const createdAt = new Date().toISOString();
+        const chatTurn = {
+            userMessage: message,
+            assistantMessage,
+            createdAt,
+        };
+
+        const turnRef = await db
+            .collection('users')
+            .doc(req.user.uid)
+            .collection('chatMessages')
+            .add(chatTurn);
+
+        res.status(200).json({
+            message: assistantMessage,
+            chatId: turnRef.id,
+            createdAt,
+        });
+    } catch (error) {
+        console.error('Firestore chat storage error:', error);
+        res.status(500).json({ message: 'The response was generated, but could not be stored.' });
+    }
+});
+
+/**
+ * GET /chat/history
+ * Returns the authenticated user's most recent stored chat turns.
+ */
+app.get('/chat/history', authenticateToken, async (req, res) => {
+    if (!db) {
+        return res.status(500).json({ message: 'Server database configuration is missing.' });
+    }
+
+    try {
+        const snapshot = await db
+            .collection('users')
+            .doc(req.user.uid)
+            .collection('chatMessages')
+            .orderBy('createdAt', 'desc')
+            .limit(50)
+            .get();
+
+        const history = snapshot.docs
+            .map((doc) => ({ id: doc.id, ...doc.data() }))
+            .reverse();
+
+        res.status(200).json({ history });
+    } catch (error) {
+        console.error('Error fetching chat history:', error);
+        res.status(500).json({ message: 'Unable to load chat history.' });
     }
 });
 

@@ -5,14 +5,16 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "ingest:pdf": "tsx scripts/ingest-pdf.ts",
+    "reembed:documents": "tsx scripts/reembed-documents.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@ai-sdk/openai": "^4.0.72",
+    "@ai-sdk/google": "^4.0.76",
     "@langchain/textsplitters": "^1.0.1",
     "@neondatabase/serverless": "^1.1.0",
     "@sendgrid/mail": "^8.1.6",
@@ -23,9 +25,11 @@
     "drizzle-orm": "^0.45.3",
     "express": "^5.2.1",
     "firebase-admin": "^14.3.0",
-    "jsonwebtoken": "^9.0.3"
+    "jsonwebtoken": "^9.0.3",
+    "pdf-parse": "^2.4.5"
   },
   "devDependencies": {
-    "drizzle-kit": "^0.31.11"
+    "drizzle-kit": "^0.31.11",
+    "tsx": "^4.23.15"
   }
 }
