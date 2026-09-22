@@ -1,18 +1,23 @@
 import { useState, type SubmitEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { z } from "zod";
 import { useAuth } from "../context/AuthContext";
 
 /**
  * Login.tsx
  * ------------------------------------------------------------------
  * Login form (/login route). Posts credentials to the backend's
- * /login endpoint (server.js) and, on success, hands the returned JWT
- * to AuthContext's login() — which is what actually establishes the
- * session app-wide (see AuthContext.tsx). Confirms this app's auth
- * flow is entirely custom-backend/JWT-based, NOT Firebase Auth —
- * firebase.ts's auth helpers are unused by this form.
+ * /login endpoint (server.js) after validating client-side via zod.
+ * On success, hands the returned JWT to AuthContext's login() - which
+ * is what actually establishes the session app-wide (see AuthContext.tsx).
  * ------------------------------------------------------------------
  */
+
+const loginSchema = z.object({
+  email: z.string().trim().pipe(z.email({ error: "Please enter a valid email" })),
+  password: z.string().min(1, "Password is required"),
+});
+
 function Login() {
   const navigate = useNavigate();
   const { login } = useAuth();
@@ -24,6 +29,13 @@ function Login() {
   async function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+
+    const validation = loginSchema.safeParse({ email, password });
+    if (!validation.success) {
+      setError(validation.error.issues[0]?.message || "Invalid email or password");
+      return;
+    }
+
     setIsLoading(true);
 
     try {
