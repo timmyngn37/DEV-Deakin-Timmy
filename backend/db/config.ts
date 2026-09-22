@@ -11,8 +11,8 @@ import { neon } from "@neondatabase/serverless";   // Neon serverless Postgres d
 import { drizzle } from "drizzle-orm/neon-http";   // Drizzle adapter for Neon's HTTP-based queries
 import { config } from "dotenv";                   // Loads environment variables from .env
 
-// Load environment variables (expects NEON_DATABASE_URL in .env)
-config({ path: ".env" });
+// Load environment variables from the repository-root .env
+config({ path: "../.env" });
 
 // Create the Neon SQL query function using the database connection string
 const sql = neon(process.env.NEON_DATABASE_URL!);

@@ -11,8 +11,8 @@
 import { defineConfig } from "drizzle-kit";   // Drizzle Kit's config helper
 import { config } from "dotenv";              // Loads .env variables
 
-// Load NEON_DATABASE_URL from .env before the config is read
-config({ path: ".env" });
+// Load NEON_DATABASE_URL from the repository-root .env before the config is read
+config({ path: "../.env" });
 
 export default defineConfig({
     schema: "./db/schema.ts",        // Path to the Drizzle table definitions
