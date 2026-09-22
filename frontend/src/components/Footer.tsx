@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { z } from 'zod'
 import FooterColumn from './FooterColumn'
 import type { IFooterColumn } from '../types'
 
@@ -7,11 +8,16 @@ import type { IFooterColumn } from '../types'
  * ------------------------------------------------------------------
  * Renders two distinct pieces:
  *   1. A newsletter signup bar that POSTs to the backend's /subscribe
- *      route (SendGrid confirmation email - see server.js).
+ *      route (SendGrid confirmation email - see server.js) after client-side
+ *      validation via zod.
  *   2. The main site footer: terminal-style greeting, personal contact
  *      links, a 3-column link section (via FooterColumn), and a bottom bar.
  * ------------------------------------------------------------------
  */
+
+const newsletterSchema = z.object({
+    signup_email: z.string().trim().pipe(z.email({ error: 'Please enter a valid email address.' })),
+})
 
 // Data for the three-column section (Explore / Support / Stay connected)
 const footerColumns: IFooterColumn[] = [
@@ -58,9 +64,15 @@ function Footer() {
     // Footer since the signup bar is the only place this is used.
     async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>): Promise<void> {
         e.preventDefault()
+        setMessage('')
+
+        const validation = newsletterSchema.safeParse({ signup_email: email })
+        if (!validation.success) {
+            setMessage(validation.error.issues[0]?.message || 'Please enter a valid email address.')
+            return
+        }
 
         setIsLoading(true)
-        setMessage('')
 
         try {
             const response = await fetch(

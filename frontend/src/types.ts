@@ -110,3 +110,26 @@ export interface IPaymentDetails {
     expiry: string
     cvc: string
 }
+
+// ChatBot Types
+export interface IDisplayMessage {
+    id: string
+    role: 'user' | 'assistant' | 'system'
+    content: string
+    timestamp: string
+    domain?: 'author' | 'platform' | 'deakin' | 'out_of_scope'
+    confidence?: number
+    isFlagged?: boolean
+    flagReason?: string
+    isRefusal?: boolean
+}
+
+export interface IMissionItem {
+    id: string
+    title: string
+    description: string
+    reward: number
+    progress: number
+    target: number
+    claimed: boolean
+}

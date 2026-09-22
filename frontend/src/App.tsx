@@ -13,6 +13,7 @@ import BrowsePosts from './routing/BrowsePosts'
 import Login from './routing/Login'
 import Signup from './routing/Signup'
 import Pricing from './routing/Pricing'
+import ChatBot from './routing/ChatBot'
 import { auth } from './utils/firebase'
 
 /**
@@ -87,6 +88,7 @@ function App() {
       <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
       <Route path="/signup" element={<PublicOnly><Signup /></PublicOnly>} />
       <Route path="/pricing" element={<Pricing />} />
+      <Route path="/chatbot" element={<ChatBot />} />
     </Routes>
   )
 }
