@@ -17,53 +17,6 @@ import { useAuth } from '../context/AuthContext'
 import type { IDisplayMessage, IMissionItem } from '../types'
 import '../styles/App.css'
 
-const INITIAL_MESSAGES: IDisplayMessage[] = [
-    {
-        id: 'msg-1',
-        role: 'user',
-        content: 'Who is Timmy Nguyen and what technologies does he use for DEV@Deakin?',
-        timestamp: '10:42 AM',
-    },
-    {
-        id: 'msg-2',
-        role: 'assistant',
-        content: `Timmy Nguyen is a full-stack software developer based in Melbourne, Australia, currently studying Bachelor of Information Technology at Deakin University.
-
-For DEV@Deakin, his core technology stack includes:
-• Frontend: React 19, TypeScript, Vite, React Router v7, and custom modular CSS.
-• Backend: Node.js, Express.js, JWT-based authentication, and bcrypt.
-• Cloud & Database: Google Cloud Firebase Firestore and Firebase Admin SDK.
-• Transactional Email: SendGrid API for automated newsletter onboarding.
-
-In his spare time, Timmy is also a passionate maimai rhythm arcade game player!`,
-        timestamp: '10:42 AM',
-        domain: 'author',
-        confidence: 96,
-        isFlagged: false,
-    },
-    {
-        id: 'msg-3',
-        role: 'user',
-        content: 'Can you tell me the recipe for authentic Italian pizza dough?',
-        timestamp: '10:44 AM',
-    },
-    {
-        id: 'msg-4',
-        role: 'assistant',
-        content: `I am an AI assistant strictly scoped to three domains:
-1. Timmy Nguyen (Author Profile & Projects)
-2. DEV@Deakin Platform (Features, Pricing & Missions)
-3. Deakin University (SIT313 Unit & Campuses)
-
-Your question about general culinary recipes is outside my authorized knowledge base. Please feel free to rephrase, or use the "Escalate to Human" button below to reach Timmy directly.`,
-        timestamp: '10:44 AM',
-        domain: 'out_of_scope',
-        confidence: 0,
-        isRefusal: true,
-        isFlagged: false,
-    },
-]
-
 const INITIAL_MISSIONS: IMissionItem[] = [
     {
         id: 'm1',
@@ -105,7 +58,7 @@ const INITIAL_MISSIONS: IMissionItem[] = [
 
 function ChatBot() {
     const { user, token } = useAuth()
-    const [messages, setMessages] = useState<IDisplayMessage[]>(INITIAL_MESSAGES)
+    const [messages, setMessages] = useState<IDisplayMessage[]>([])
     const [inputText, setInputText] = useState('')
     const [isSending, setIsSending] = useState(false)
     const [isSidebarOpen, setIsSidebarOpen] = useState(true)
@@ -385,9 +338,9 @@ function ChatBot() {
                             <button
                                 type="button"
                                 className="terminal-btn"
-                                onClick={() => setMessages(INITIAL_MESSAGES)}
+                                onClick={() => setMessages([])}
                             >
-                                Reset Demo Chat
+                                Clear Chat
                             </button>
                         </div>
                     </div>
@@ -405,7 +358,6 @@ function ChatBot() {
                                 Author Information, DEV@Deakin Platform, and Deakin University. If an answer is inaccurate or unhelpful, you can
                                 flag the response to trigger human escalation to Timmy Nguyen.
                             </p>
-                            <div className="suggestions-title">Suggested prompts:</div>
                         </div>
 
                         {/* Message Stream */}
