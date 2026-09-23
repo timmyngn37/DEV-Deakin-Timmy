@@ -1,11 +1,18 @@
+/**
+ * src/types.ts
+ * ------------------------------------------------------------------
+ * Centralized TypeScript type definitions for DEV@Deakin.
+ * ------------------------------------------------------------------
+ */
+
 // Content Types
 export interface IContent {
-    image: string;
-    name: string;
-    title: string;
-    description: string;
-    rating: number;
-    author: string;
+    image: string
+    name: string
+    title: string
+    description: string
+    rating: number
+    author: string
 }
 
 // Footer Types
@@ -31,18 +38,18 @@ export interface IFooterColumn {
 
 // Milestone Types
 export interface IMilestone {
-    commitHash: string;
-    term: string;
-    title: string;
-    description: string;
+    commitHash: string
+    term: string
+    title: string
+    description: string
 }
 
 // Project Types
 export interface IProject {
-    image: string;
-    name: string;
-    description: string;
-    link: string;
+    image: string
+    name: string
+    description: string
+    link: string
 }
 
 // Pricing Types
@@ -68,7 +75,7 @@ export interface IPricingColumnProps {
     badgeLabel?: string
 }
 
-// Post Types (New Post form + Browse Posts page)
+// Post Types
 export type PostType = 'question' | 'article'
 export type PostPlan = 'free' | 'paid'
 
@@ -94,6 +101,9 @@ export interface IAuthUser {
     email: string
     name: string
     plan: Plan
+    credits?: number
+    streakDays?: number
+    lastLoginDate?: string
 }
 
 export interface IAuthContextValue {
@@ -103,7 +113,7 @@ export interface IAuthContextValue {
     logout: () => void
 }
 
-// Upgrade Modal Types
+// Payment Types
 export interface IPaymentDetails {
     cardholderName: string
     cardNumber: string
@@ -111,19 +121,30 @@ export interface IPaymentDetails {
     cvc: string
 }
 
-// ChatBot Types
+// ChatBot & Flagging Types
+export type MessageDomain = 'author' | 'platform' | 'deakin' | 'out_of_scope' | 'unit_syllabus'
+export type FlagReason = 'unhelpful' | 'inaccurate' | 'out_of_scope' | 'needs_human'
+
 export interface IDisplayMessage {
     id: string
     role: 'user' | 'assistant' | 'system'
     content: string
     timestamp: string
-    domain?: 'author' | 'platform' | 'deakin' | 'out_of_scope'
+    domain?: MessageDomain
     confidence?: number
     isFlagged?: boolean
-    flagReason?: string
+    flagReason?: FlagReason
     isRefusal?: boolean
 }
 
+export interface IFlagPayload {
+    messageId: string
+    flagReason: FlagReason
+    flagNotes?: string
+    messageContent?: string
+}
+
+// Daily Missions & Economy Types
 export interface IMissionItem {
     id: string
     title: string
@@ -132,4 +153,12 @@ export interface IMissionItem {
     progress: number
     target: number
     claimed: boolean
+}
+
+export interface IEconomyData {
+    credits: number
+    streakDays: number
+    plan: Plan
+    missions: IMissionItem[]
+    lastLoginDate?: string
 }

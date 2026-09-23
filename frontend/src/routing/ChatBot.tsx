@@ -10,264 +10,62 @@
  * ------------------------------------------------------------------
  */
 
-import { useEffect, useState } from 'react'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { useAuth } from '../context/AuthContext'
-import type { IDisplayMessage, IMissionItem } from '../types'
+import { useAuth } from '../customHooks/AuthContext'
+import { useEconomy } from '../customHooks/useEconomy'
+import { useChat } from '../customHooks/useChat'
+import type { IDisplayMessage } from '../types'
 import '../styles/App.css'
-
-const INITIAL_MISSIONS: IMissionItem[] = [
-    {
-        id: 'm1',
-        title: 'Daily Check-in',
-        description: 'Log into DEV@Deakin to claim your daily assistant bonus.',
-        reward: 2,
-        progress: 1,
-        target: 1,
-        claimed: true,
-    },
-    {
-        id: 'm2',
-        title: 'Knowledge Seeker',
-        description: 'Ask 2 questions about Timmy or DEV@Deakin platform.',
-        reward: 2,
-        progress: 1,
-        target: 2,
-        claimed: false,
-    },
-    {
-        id: 'm3',
-        title: 'Quality Sentinel',
-        description: 'Flag an unhelpful response or request human escalation.',
-        reward: 3,
-        progress: 1,
-        target: 1,
-        claimed: false,
-    },
-    {
-        id: 'm4',
-        title: 'Unit Scholar',
-        description: 'Ask a question regarding the SIT313 syllabus.',
-        reward: 2,
-        progress: 0,
-        target: 1,
-        claimed: false,
-    },
-]
 
 function ChatBot() {
     const { user, token } = useAuth()
-    const [messages, setMessages] = useState<IDisplayMessage[]>([])
-    const [inputText, setInputText] = useState('')
-    const [isSending, setIsSending] = useState(false)
+    const isPaid = user?.plan === 'paid'
+
     const [isSidebarOpen, setIsSidebarOpen] = useState(true)
-    const [missions, setMissions] = useState<IMissionItem[]>(INITIAL_MISSIONS)
-    const [availableCredits, setAvailableCredits] = useState(5)
-    const [streakDays] = useState(3)
 
-    // Supporting Feature A: Chat Flagging modal state
-    const [flagModalTarget, setFlagModalTarget] = useState<IDisplayMessage | null>(null)
-    const [flagReason, setFlagReason] = useState<'unhelpful' | 'inaccurate' | 'out_of_scope' | 'needs_human'>('unhelpful')
-    const [flagNotes, setFlagNotes] = useState('')
-    const [flagSuccessToast, setFlagSuccessToast] = useState('')
+    const { economy, dispatch, claimMission, totalPages, currentMissionsPage } = useEconomy(token, isPaid)
 
-    useEffect(() => {
-        if (!token) return
+    const {
+        inputText,
+        setInputText,
+        isPending,
+        optimisticMessages,
+        handleSendMessage,
+        handleClearChat,
+        flagModalTarget,
+        setFlagModalTarget,
+        flagReason,
+        setFlagReason,
+        flagNotes,
+        setFlagNotes,
+        flagSuccessToast,
+        setFlagSuccessToast,
+        openFlagModal,
+        submitFlag,
+    } = useChat(token, economy.credits, dispatch)
 
-        let cancelled = false
-
-        const loadChatHistory = async () => {
-            try {
-                const response = await fetch('http://localhost:3000/chat/history', {
-                    headers: { Authorization: `Bearer ${token}` },
-                })
-                const data = await response.json()
-
-                if (!response.ok) {
-                    throw new Error(data.message || 'Unable to load chat history.')
-                }
-
-                if (cancelled || !Array.isArray(data.history) || data.history.length === 0) return
-
-                const storedMessages: IDisplayMessage[] = data.history.flatMap((turn: {
-                    id: string
-                    userMessage: string
-                    assistantMessage: string
-                    createdAt: string
-                }) => {
-                    const timestamp = new Date(turn.createdAt).toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                    })
-
-                    return [
-                        {
-                            id: `${turn.id}-user`,
-                            role: 'user' as const,
-                            content: turn.userMessage,
-                            timestamp,
-                        },
-                        {
-                            id: `${turn.id}-assistant`,
-                            role: 'assistant' as const,
-                            content: turn.assistantMessage,
-                            timestamp,
-                            domain: 'platform' as const,
-                            isFlagged: false,
-                        },
-                    ]
-                })
-
-                setMessages(storedMessages)
-            } catch (error) {
-                console.error('Chat history error:', error)
-            }
-        }
-
-        loadChatHistory()
-        return () => {
-            cancelled = true
-        }
-    }, [token])
-
-    // Copy to clipboard helper
     const handleCopy = (text: string) => {
         navigator.clipboard.writeText(text)
         alert('Copied message to clipboard!')
     }
 
-    // Send a chat turn to the backend, which stores it under the authenticated user.
-    const handleSendMessage = async (e: { preventDefault: () => void }) => {
-        e.preventDefault()
-        const text = inputText.trim()
-        if (!text) return
-
-        if (!token) {
-            alert('Please log in before using the assistant.')
-            return
-        }
-
-        if (availableCredits <= 0 || isSending) {
-            alert("You don't have enough credits to send a message. Complete daily missions or upgrade to Paid!")
-            return
-        }
-
-        const now = new Date()
-        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-
-        const userMsg: IDisplayMessage = {
-            id: `msg-${Date.now()}`,
-            role: 'user',
-            content: text,
-            timestamp: timeStr,
-        }
-
-        // Add user message to UI and deduct 1 credit
-        setMessages((prev) => [...prev, userMsg])
-        setAvailableCredits((prev) => Math.max(0, prev - 1))
-        setInputText('')
-
-        setIsSending(true)
-        try {
-            const response = await fetch('http://localhost:3000/chat', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
-                },
-                body: JSON.stringify({ message: text }),
-            })
-
-            const contentType = response.headers.get('content-type') ?? ''
-            const responseBody = await response.text()
-            const data = contentType.includes('application/json')
-                ? JSON.parse(responseBody)
-                : { message: `Chat backend returned ${response.status} ${response.statusText}. Restart the backend server on port 3000.` }
-            if (!response.ok) {
-                throw new Error(data.message || 'Unable to send chat message.')
-            }
-
-            const botMsg: IDisplayMessage = {
-                id: `msg-${Date.now() + 1}`,
-                role: 'assistant',
-                content: data.message,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                domain: data.domain ?? 'platform',
-                confidence: data.confidence,
-                isRefusal: data.isRefusal === true,
-                isFlagged: false,
-            }
-            setMessages((prev) => [...prev, botMsg])
-        } catch (error) {
-            setAvailableCredits((prev) => prev + 1)
-            alert(error instanceof Error ? error.message : 'Unable to send chat message.')
-        } finally {
-            setIsSending(false)
-        }
+    const showToast = (msg: string) => {
+        setFlagSuccessToast(msg)
+        setTimeout(() => setFlagSuccessToast(''), 3000)
     }
-
-    // Trigger flagging modal
-    const openFlagModal = (msg: IDisplayMessage) => {
-        setFlagModalTarget(msg)
-        setFlagNotes('')
-        setFlagReason('unhelpful')
-    }
-
-    // Submit flagging / escalation
-    const submitFlag = () => {
-        if (!flagModalTarget) return
-
-        setMessages((prev) =>
-            prev.map((m) =>
-                m.id === flagModalTarget.id
-                    ? { ...m, isFlagged: true, flagReason }
-                    : m
-            )
-        )
-
-        setFlagModalTarget(null)
-        setFlagSuccessToast('Response flagged & escalated to Timmy Nguyen! (+3 credits earned)')
-
-        // Advance mission #3
-        setMissions((prev) =>
-            prev.map((m) =>
-                m.id === 'm3' ? { ...m, progress: 1 } : m
-            )
-        )
-
-        setTimeout(() => setFlagSuccessToast(''), 4000)
-    }
-
-    // Claim mission reward
-    const claimMission = (id: string) => {
-        setMissions((prev) =>
-            prev.map((m) => {
-                if (m.id === id && !m.claimed && m.progress >= m.target) {
-                    setAvailableCredits((c) => c + m.reward)
-                    return { ...m, claimed: true }
-                }
-                return m
-            })
-        )
-    }
-
-    const isPaid = user?.plan === 'paid'
 
     return (
         <div className="chatbot-page">
-            {/* Header & Domain Tags */}
             <div className="chatbot-header">
                 <h1 className="chatbot-title">
                     <span className="accent">$</span> dev-assistant/
                 </h1>
                 <p className="chatbot-subtitle">
-                    An interactive AI Assistant strictly domain-bounded to Timmy Nguyen, the DEV@Deakin platform, and Deakin University.
+                    An interactive AI Assistant strictly domain-bounded to Timmy Nguyen, DEV@Deakin, and Deakin University.
                 </p>
-
             </div>
 
-            {/* Supporting Feature B: Daily Missions & Economy Bar */}
             <div className="chatbot-economy-bar">
                 <div className="economy-stat-group">
                     <div className="economy-badge">
@@ -279,12 +77,12 @@ function ChatBot() {
 
                     <div className="economy-badge credits-indicator">
                         <span>⚡</span>
-                        <span>{availableCredits} Credits Available</span>
+                        <span>{economy.credits} Credits Available</span>
                     </div>
 
                     <div className="economy-badge streak-indicator">
                         <span>🔥</span>
-                        <span>{streakDays}-Day Streak</span>
+                        <span>{economy.streakDays}-Day Streak</span>
                     </div>
                 </div>
 
@@ -298,7 +96,6 @@ function ChatBot() {
                 </button>
             </div>
 
-            {/* Toast Notification */}
             {flagSuccessToast && (
                 <div style={{
                     marginBottom: '1rem',
@@ -323,11 +120,8 @@ function ChatBot() {
                 </div>
             )}
 
-            {/* Main Layout Grid */}
             <div className={`chatbot-main-grid ${isSidebarOpen ? 'with-sidebar' : ''}`}>
-                {/* Center: Terminal Chatbot Area */}
                 <div className="chatbot-terminal">
-                    {/* Terminal Title Bar */}
                     <div className="terminal-header">
                         <div className="terminal-dots-wrap">
                             <span className="dot dot-red"></span>
@@ -339,30 +133,26 @@ function ChatBot() {
                             <button
                                 type="button"
                                 className="terminal-btn"
-                                onClick={() => setMessages([])}
+                                onClick={handleClearChat}
                             >
                                 Clear Chat
                             </button>
                         </div>
                     </div>
 
-                    {/* Messages Scroll Area */}
                     <div className="chat-messages-container">
-                        {/* Welcome Scope Card */}
                         <div className="chatbot-welcome-card">
                             <div className="welcome-title">
                                 <span>🤖</span>
                                 <span>Welcome to DEV@Deakin AI Assistant</span>
                             </div>
                             <p className="welcome-text">
-                                I am designed according to answer questions strictly across three domains:
-                                Author Information, DEV@Deakin Platform, and Deakin University. If an answer is inaccurate or unhelpful, you can
-                                flag the response to trigger human escalation to Timmy Nguyen.
+                                Answers are strictly domain-bounded: Author Info, DEV@Deakin Platform, and Deakin University.
+                                Flag unhelpful responses to escalate to human review by Timmy Nguyen.
                             </p>
                         </div>
 
-                        {/* Message Stream */}
-                        {messages.map((msg) => (
+                        {optimisticMessages.map((msg: IDisplayMessage) => (
                             <div key={msg.id} className={`message-row ${msg.role}`}>
                                 <div className="message-meta">
                                     <span>{msg.role === 'user' ? 'You' : 'DEV@Deakin Assistant'}</span>
@@ -371,7 +161,6 @@ function ChatBot() {
                                 </div>
 
                                 <div className="message-bubble">
-                                    {/* Domain Tag & Confidence Indicator for Assistant messages */}
                                     {msg.role === 'assistant' && msg.domain && (
                                         <div className="message-domain-bar">
                                             <span className={`domain-tag ${msg.domain}`}>
@@ -387,7 +176,6 @@ function ChatBot() {
 
                                     <div style={{ whiteSpace: 'pre-line' }}>{msg.content}</div>
 
-                                    {/* Out of scope prompt */}
                                     {msg.isRefusal && (
                                         <div className="refusal-escalate-box">
                                             <div className="refusal-escalate-text">
@@ -404,7 +192,6 @@ function ChatBot() {
                                         </div>
                                     )}
 
-                                    {/* Action toolbar for Assistant messages (Supporting Feature A) */}
                                     {msg.role === 'assistant' && !msg.isRefusal && (
                                         <div className="message-actions-bar">
                                             <button
@@ -427,7 +214,7 @@ function ChatBot() {
                                                     type="button"
                                                     className="msg-action-btn flag-btn"
                                                     onClick={() => openFlagModal(msg)}
-                                                    title="Flag as inaccurate or unhelpful"
+                                                    title="Flag response"
                                                 >
                                                     <span>🚩</span>
                                                     <span>Flag Response</span>
@@ -450,7 +237,6 @@ function ChatBot() {
                         ))}
                     </div>
 
-                    {/* Chat Input Container */}
                     <div className="chatbot-input-container">
                         <form onSubmit={handleSendMessage} className="input-prompt-form">
                             <div className="input-row">
@@ -465,23 +251,22 @@ function ChatBot() {
                                 <button
                                     type="submit"
                                     className="chat-send-btn"
-                                    disabled={!inputText.trim() || availableCredits <= 0 || isSending}
+                                    disabled={!inputText.trim() || economy.credits <= 0 || isPending}
                                 >
-                                    <span>{isSending ? 'Sending...' : 'Send'}</span>
+                                    <span>{isPending ? 'Sending...' : 'Send'}</span>
                                     <span className="cost-tag">(1 ⚡)</span>
                                 </button>
                             </div>
 
                             <div className="input-helper-bar">
                                 <span>
-                                    Cost: 1 Credit/query • {availableCredits} remaining
+                                    Cost: 1 Credit/query • {economy.credits} remaining
                                 </span>
                             </div>
                         </form>
                     </div>
                 </div>
 
-                {/* Right: Daily Missions & Economy Sidebar (Supporting Feature B) */}
                 {isSidebarOpen && (
                     <aside className="missions-panel">
                         <div className="missions-panel-header">
@@ -490,45 +275,40 @@ function ChatBot() {
                                 <span>Daily Missions</span>
                             </div>
                             <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
-                                Resets 00:00 AEST
+                                Page {economy.currentPage} of {totalPages}
                             </span>
                         </div>
 
-                        {/* Streak Box */}
                         <div className="missions-streak-box">
                             <div>
                                 <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>Daily Streak</div>
-                                <div className="streak-count">🔥 {streakDays} Days Active</div>
-                            </div>
-                            <div style={{ fontSize: '0.75rem', color: '#fb923c', textAlign: 'right' }}>
-                                +1 bonus credit per streak!
+                                <div className="streak-count">🔥 {economy.streakDays} Days Active</div>
                             </div>
                         </div>
 
-                        {/* Missions List */}
                         <div className="missions-list">
-                            {missions.map((mission) => {
-                                    const isReady = !mission.claimed && mission.progress >= mission.target
-                                    let missionAction: ReactNode
-                                    if (mission.claimed) {
-                                        missionAction = <span className="mission-claimed-tag">✓ Claimed</span>
-                                    } else if (isReady) {
-                                        missionAction = (
-                                            <button
-                                                type="button"
-                                                className="mission-claim-btn"
-                                                onClick={() => claimMission(mission.id)}
-                                            >
-                                                Claim +{mission.reward} ⚡
-                                            </button>
-                                        )
-                                    } else {
-                                        missionAction = (
-                                            <span style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>
-                                                In Progress
-                                            </span>
-                                        )
-                                    }
+                            {currentMissionsPage.map((mission) => {
+                                const isReady = !mission.claimed && mission.progress >= mission.target
+                                let missionAction: ReactNode
+                                if (mission.claimed) {
+                                    missionAction = <span className="mission-claimed-tag">✓ Claimed</span>
+                                } else if (isReady) {
+                                    missionAction = (
+                                        <button
+                                            type="button"
+                                            className="mission-claim-btn"
+                                            onClick={() => claimMission(mission.id, showToast)}
+                                        >
+                                            Claim +{mission.reward} ⚡
+                                        </button>
+                                    )
+                                } else {
+                                    missionAction = (
+                                        <span style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>
+                                            In Progress
+                                        </span>
+                                    )
+                                }
                                 return (
                                     <div key={mission.id} className="mission-card">
                                         <div className="mission-header-row">
@@ -550,7 +330,6 @@ function ChatBot() {
                                             <span className="mission-progress-label">
                                                 {mission.progress}/{mission.target} completed
                                             </span>
-
                                             {missionAction}
                                         </div>
                                     </div>
@@ -558,7 +337,27 @@ function ChatBot() {
                             })}
                         </div>
 
-                        {/* Upgrade Notice for Free Tier */}
+                        {totalPages > 1 && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.5rem' }}>
+                                <button
+                                    type="button"
+                                    className="terminal-btn"
+                                    disabled={economy.currentPage === 1}
+                                    onClick={() => dispatch({ type: 'SET_MISSION_PAGE', payload: economy.currentPage - 1 })}
+                                >
+                                    ← Previous
+                                </button>
+                                <button
+                                    type="button"
+                                    className="terminal-btn"
+                                    disabled={economy.currentPage === totalPages}
+                                    onClick={() => dispatch({ type: 'SET_MISSION_PAGE', payload: economy.currentPage + 1 })}
+                                >
+                                    Next →
+                                </button>
+                            </div>
+                        )}
+
                         {!isPaid && (
                             <div className="missions-upgrade-card">
                                 <div className="upgrade-callout-text">
@@ -573,12 +372,11 @@ function ChatBot() {
                 )}
             </div>
 
-            {/* Supporting Feature A: Chat Flagging & Escalation Modal */}
             {flagModalTarget && (
                 <div className="flag-modal-overlay" onClick={() => setFlagModalTarget(null)}>
                     <div className="flag-modal-content" onClick={(e) => e.stopPropagation()}>
                         <div className="flag-modal-header">
-                            <span className="flag-modal-title">🚩 Flag Response & Escalate to Human</span>
+                            <span className="flag-modal-title">🚩 Flag Response & Escalate</span>
                             <button
                                 type="button"
                                 className="flag-modal-close"
@@ -590,8 +388,7 @@ function ChatBot() {
 
                         <div className="flag-modal-body">
                             <p className="flag-modal-description">
-                                Directly trigger the human-contact fallback for low-confidence or unhelpful answers.
-                                This helps improve the assistant's hand-written corpus and notifies Timmy Nguyen.
+                                Trigger human-contact fallback for low-confidence or unhelpful answers.
                             </p>
 
                             <div className="flag-preview-box">
@@ -630,7 +427,7 @@ function ChatBot() {
                                         checked={flagReason === 'out_of_scope'}
                                         onChange={() => setFlagReason('out_of_scope')}
                                     />
-                                    <span>Failed to handle domain boundaries</span>
+                                    <span>Failed domain boundaries</span>
                                 </label>
                                 <label className="flag-reason-label">
                                     <input
@@ -640,17 +437,17 @@ function ChatBot() {
                                         checked={flagReason === 'needs_human'}
                                         onChange={() => setFlagReason('needs_human')}
                                     />
-                                    <span>Specific request requiring human review by Timmy</span>
+                                    <span>Needs human review by Timmy</span>
                                 </label>
                             </div>
 
                             <div>
                                 <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.75rem', fontWeight: 600 }}>
-                                    Additional Notes or Context (Optional):
+                                    Additional Context:
                                 </label>
                                 <textarea
                                     className="flag-notes-textarea"
-                                    placeholder="Explain why this response wasn't satisfactory or what question you would like Timmy to answer..."
+                                    placeholder="Explain why this response wasn't satisfactory..."
                                     value={flagNotes}
                                     onChange={(e) => setFlagNotes(e.target.value)}
                                 />
