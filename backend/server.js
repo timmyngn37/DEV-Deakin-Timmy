@@ -5,13 +5,8 @@
  *   1. Auth            - /register, /login, /upgrade (JWT-based, backed by Firestore)
  *   2. Newsletter      - /subscribe (SendGrid transactional email)
  *   3. Posts           - /posts (GET, POST with role/plan enforcement)
- *   4. RAG & AI Chat   - /chat, /chat/history, /chat/flag
+ *   4. RAG & AI Chat   - /chat, /chat/history (GET & DELETE), /chat/flag
  *   5. Economy & Admin - /user/credits-missions, /missions/claim, /admin/ingest-pdf
- *
- * Auth model: we do NOT use Firebase Authentication on the client.
- * Instead, passwords are hashed with bcrypt and stored in Firestore
- * ourselves, and successful logins are handed a short-lived JWT that
- * the frontend attaches as a Bearer token on subsequent requests.
  * ------------------------------------------------------------------
  */
 
@@ -27,19 +22,12 @@ const multer = require('multer');
 const { db } = require('./firebaseAdmin');
 const { retrieveRelevantChunks, generateEmbedding, insertChunk } = require('./rag');
 
-// Load backend/.env regardless of which directory the process is started from.
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const app = express();
-
-// Configure multer for handling file uploads in memory for corpus ingestion
 const upload = multer({ storage: multer.memoryStorage() });
 
 // --- CORS ---------------------------------------------------------------
-// Only allow requests from origins listed in FRONTEND_URL (comma-separated
-// for multiple, e.g. local dev + deployed domain). Falls back to allowing
-// localhost:5173 (Vite's default dev port) if FRONTEND_URL isn't set, so
-// local development still works out of the box.
 const allowedOrigins = process.env.FRONTEND_URL
     ? process.env.FRONTEND_URL.split(',').map((origin) => origin.trim())
     : ['http://localhost:5173'];
@@ -48,35 +36,26 @@ console.log('CORS allowed origins:', allowedOrigins);
 
 app.use(cors({
     origin(origin, callback) {
-        // `origin` is undefined for same-origin/non-browser requests
-        // (e.g. curl, server-to-server, Postman) — allow those through.
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
             callback(new Error(`CORS blocked request from origin: ${origin}`));
         }
     },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
 }));
 
 // --- Global middleware ---------------------------------------------------
-app.use(express.json());                  // parses application/json bodies into req.body
-app.use(express.urlencoded({ extended: true })); // parses form-encoded bodies (e.g. classic <form> posts)
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // --- Environment / config ----------------------------------------------
 const apiKey = process.env.SENDGRID_API_KEY?.trim();
 const fromEmail = process.env.SENDGRID_FROM_EMAIL?.trim();
 const jwtSecret = process.env.JWT_SECRET?.trim();
 const googleApiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim();
-
-// Startup diagnostics: confirms required env vars are present without
-// ever printing their actual values (avoids leaking secrets to logs).
-console.log('SendGrid API key exists:', !!apiKey);
-console.log('API key starts with SG.:', apiKey?.startsWith('SG.'));
-console.log('Sender email exists:', !!fromEmail);
-console.log('JWT secret exists:', !!jwtSecret);
-console.log('Google Generative AI API key exists:', !!googleApiKey);
-console.log('Firestore connected:', !!db);
 
 if (!apiKey) {
     console.error('ERROR: SENDGRID_API_KEY is missing from backend/.env');
@@ -88,7 +67,6 @@ if (!jwtSecret) {
     console.error('ERROR: JWT_SECRET is missing from backend/.env');
 }
 
-// Rate limiter for auth endpoints - mitigates brute-force login attempts and registration spam.
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 10,
@@ -97,7 +75,6 @@ const authLimiter = rateLimit({
     legacyHeaders: false,
 });
 
-// Default Daily Missions configuration used across economy endpoints
 const DEFAULT_MISSIONS = [
     { id: 'm1', title: 'Daily Check-in', description: 'Log into DEV@Deakin to claim your daily bonus.', reward: 2, progress: 1, target: 1, claimed: false },
     { id: 'm2', title: 'Knowledge Seeker', description: 'Ask 2 questions about Timmy or DEV@Deakin platform.', reward: 2, progress: 0, target: 2, claimed: false },
@@ -105,21 +82,8 @@ const DEFAULT_MISSIONS = [
     { id: 'm4', title: 'Unit Scholar', description: 'Ask a question regarding the SIT313 syllabus.', reward: 2, progress: 0, target: 1, claimed: false },
 ];
 
-// --- Validation helpers -------------------------------------------------
-
-// Simple structural email check.
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-/**
- * Returns a list of descriptions of any password rules that `password` fails to satisfy (e.g. "a number").
- * An empty array means the password is valid.
- *
- * IMPORTANT: these rules are duplicated in the frontend's
- * `getUnmetPasswordCriteria` (Signup.tsx) so the user sees the same
- * feedback instantly, client-side, before ever hitting this endpoint.
- * 
- * If you change the rules here, update Signup.tsx too.
- */
 function getUnmetPasswordCriteria(password) {
     const unmet = [];
     if (!password || password.length < 8) unmet.push('at least 8 characters');
@@ -130,13 +94,6 @@ function getUnmetPasswordCriteria(password) {
     return unmet;
 }
 
-/**
- * Validates the /register payload server-side. This is the last line
- * of defense — the frontend already validates before submitting, but
- * the server can never trust client-side checks alone.
- *
- * Returns an error message string, or `null` if everything is valid.
- */
 function validateRegisterInput({ name, email, password }) {
     if (!name || !name.trim()) return 'Name is required';
     if (!email || !EMAIL_REGEX.test(email)) return 'Please enter a valid email';
@@ -147,63 +104,31 @@ function validateRegisterInput({ name, email, password }) {
     return null;
 }
 
-/**
- * Validates a /posts payload server-side. Mirrors the client-side zod
- * schema in Post.tsx (postSchema) - the frontend check exists purely for
- * fast user feedback, this is the check that actually decides whether
- * data reaches Firestore.
- *
- * Returns an error message string, or `null` if everything is valid.
- */
 function validatePostInput({ postType, postPlan, title, description, abstract, articleText, tags }) {
-    if (postType !== 'question' && postType !== 'article') {
-        return 'Invalid post type.';
-    }
-    if (postPlan !== 'free' && postPlan !== 'paid') {
-        return 'Invalid post plan.';
-    }
-    if (!title || !title.trim()) {
-        return 'Title is required.';
-    }
+    if (postType !== 'question' && postType !== 'article') return 'Invalid post type.';
+    if (postPlan !== 'free' && postPlan !== 'paid') return 'Invalid post plan.';
+    if (!title || !title.trim()) return 'Title is required.';
 
     if (postType === 'question' && (!description || !description.trim())) {
         return 'Description is required.';
     }
 
     if (postType === 'article') {
-        if (!abstract || !abstract.trim()) {
-            return 'Abstract is required.';
-        }
-        if (abstract.includes('\n')) {
-            return 'Abstract must be a single paragraph (no line breaks).';
-        }
-        if (!articleText || !articleText.trim()) {
-            return 'Article text is required.';
-        }
+        if (!abstract || !abstract.trim()) return 'Abstract is required.';
+        if (abstract.includes('\n')) return 'Abstract must be a single paragraph (no line breaks).';
+        if (!articleText || !articleText.trim()) return 'Article text is required.';
     }
 
     if (tags && typeof tags === 'string' && tags.trim().length > 0) {
         const tagList = tags.split(',').map((t) => t.trim()).filter(Boolean);
-        if (tagList.length > 3) {
-            return 'Please add up to 3 tags only.';
-        }
+        if (tagList.length > 3) return 'Please add up to 3 tags only.';
     }
 
     return null;
 }
 
-/**
- * Express middleware that protects a route behind a valid JWT.
- *
- * Expects the client to send: Authorization: Bearer <token>
- * On success, attaches the decoded payload (uid, email, name, plan)
- * to `req.user` so downstream handlers can use it directly.
- *
- * Usage: app.post('/some-protected-route', authenticateToken, handler)
- */
 function authenticateToken(req, res, next) {
     if (!jwtSecret) {
-        // Server misconfiguration (missing secret).
         return res.status(500).json({ message: 'Server configuration is missing.' });
     }
 
@@ -216,9 +141,6 @@ function authenticateToken(req, res, next) {
 
     jwt.verify(token, jwtSecret, (error, payload) => {
         if (error) {
-            // Covers both an expired token and a tampered/invalid one —
-            // we don't distinguish in the response to avoid giving
-            // attackers hints about why verification failed.
             return res.status(403).json({ message: 'Your session has expired. Please log in again.' });
         }
         req.user = payload;
@@ -226,14 +148,6 @@ function authenticateToken(req, res, next) {
     });
 }
 
-/**
- * Express middleware for routes that work whether or not the caller is
- * logged in, but still need to know WHICH user (if any) is asking - e.g.
- * Browse Posts, where a logged-out visitor sees free posts and a Paid
- * user sees more. Unlike authenticateToken, a missing/invalid/expired
- * token is NOT an error here - it just means req.user stays null and
- * the route treats the caller as logged out.
- */
 function optionalAuthenticate(req, res, next) {
     const authHeader = req.headers.authorization;
     const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
@@ -253,108 +167,61 @@ function optionalAuthenticate(req, res, next) {
 // AUTH ROUTES
 // ========================================================================
 
-/**
- * POST /register
- * Creates a new user account.
- * Body: { name, email, password }
- *
- * Flow: validate input -> check email isn't already taken -> hash
- * password -> store user doc in Firestore. Does NOT log the user in;
- * they're redirected to /login afterwards (kept as two separate steps
- * for simplicity and to mirror typical signup UX).
- */
 app.post('/register', authLimiter, async (req, res) => {
-    if (!db) {
-        return res.status(500).json({ message: 'Server database configuration is missing.' });
-    }
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
     const { name, email, password } = req.body;
-
     const validationError = validateRegisterInput({ name, email, password });
-    if (validationError) {
-        return res.status(400).json({ message: validationError });
-    }
+    if (validationError) return res.status(400).json({ message: validationError });
 
     try {
         const usersRef = db.collection('users');
-        // Emails are stored lowercase and compared lowercase to avoid duplicate accounts.
         const existing = await usersRef.where('email', '==', email.toLowerCase()).limit(1).get();
 
         if (!existing.empty) {
             return res.status(409).json({ message: 'An account with this email already exists.' });
         }
 
-        // 10 salt rounds is bcrypt's commonly recommended default.
         const passwordHash = await bcrypt.hash(password, 10);
+        const todayStr = new Date().toISOString().split('T')[0];
 
         await usersRef.add({
             name: name.trim(),
             email: email.toLowerCase(),
             passwordHash,
-            plan: 'free', // all new accounts start on the free plan
+            plan: 'free',
             credits: 5,
             streakDays: 1,
+            lastLoginDate: todayStr,
+            dailyMissions: DEFAULT_MISSIONS,
             createdAt: new Date().toISOString(),
         });
 
         res.status(201).json({ message: 'Account created successfully. Please log in.' });
     } catch (error) {
-        // Generic 500 + log: we don't leak internal error details to the client,
-        // but we do want them in server logs for debugging.
         console.error('Error during registration:', error);
         res.status(500).json({ message: 'Something went wrong, please try again.' });
     }
 });
 
-/**
- * POST /login
- * Verifies credentials and issues a JWT on success.
- * Body: { email, password }
- * Response: { message, token }
- *
- * The returned JWT encodes { uid, email, name, plan } and expires in 2h;
- * the frontend stores it (see AuthContext) and attaches it as a Bearer token
- * to any subsequent authenticated request.
- */
 app.post('/login', authLimiter, async (req, res) => {
-    if (!db || !jwtSecret) {
-        return res.status(500).json({ message: 'Server configuration is missing.' });
-    }
+    if (!db || !jwtSecret) return res.status(500).json({ message: 'Server configuration is missing.' });
 
     const { email, password } = req.body;
-    console.log('Login attempt for:', email);
-
-    if (!email || !password) {
-        console.log('Login rejected: missing email or password');
-        return res.status(400).json({ message: 'Email and password are required.' });
-    }
+    if (!email || !password) return res.status(400).json({ message: 'Email and password are required.' });
 
     try {
         const usersRef = db.collection('users');
         const snapshot = await usersRef.where('email', '==', email.toLowerCase()).limit(1).get();
 
-        if (snapshot.empty) {
-            console.log('Login rejected: no user found for', email);
-            // Deliberately identical message/status to "wrong password" below -
-            // this avoids leaking whether an email is registered (user enumeration).
-            return res.status(401).json({ message: 'Incorrect email or password.' });
-        }
+        if (snapshot.empty) return res.status(401).json({ message: 'Incorrect email or password.' });
 
         const userDoc = snapshot.docs[0];
         const user = userDoc.data();
-        console.log('User found:', userDoc.id, user.email);
 
         const passwordMatches = await bcrypt.compare(password, user.passwordHash);
-        console.log('Password matches:', passwordMatches);
+        if (!passwordMatches) return res.status(401).json({ message: 'Incorrect email or password.' });
 
-        if (!passwordMatches) {
-            console.log('Login rejected: incorrect password for', email);
-            return res.status(401).json({ message: 'Incorrect email or password.' });
-        }
-
-        // Defensive default: accounts created before the `plan` field existed
-        // (or with any unexpected value) fall back to 'free'
-        // rather than accidentally granting paid access.
         const plan = user.plan === 'paid' ? 'paid' : 'free';
 
         const token = jwt.sign(
@@ -362,38 +229,24 @@ app.post('/login', authLimiter, async (req, res) => {
             jwtSecret,
             { expiresIn: '2h' }
         );
-        console.log('Login successful, JWT issued for', email);
 
-        res.status(200).json({
-            message: 'Login successful.',
-            token,
-        });
+        res.status(200).json({ message: 'Login successful.', token });
     } catch (error) {
         console.error('Error during login:', error);
         res.status(500).json({ message: 'Something went wrong, please try again.' });
     }
 });
 
-/**
- * POST /chat
- * Generates a Gemini response using retrieved Neon context when available,
- * verifies user credit quota, deducts 1 credit, and then stores the
- * authenticated user's chat turn in Firestore.
- * Body: { message }
- */
+// ========================================================================
+// RAG CHATBOT & FLAGGING ROUTES
+// ========================================================================
+
 app.post('/chat', authenticateToken, async (req, res) => {
-    if (!db) {
-        return res.status(500).json({ message: 'Server database configuration is missing.' });
-    }
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
     const message = typeof req.body.message === 'string' ? req.body.message.trim() : '';
-    if (!message) {
-        return res.status(400).json({ message: 'Chat message is required.' });
-    }
-
-    if (message.length > 2000) {
-        return res.status(400).json({ message: 'Chat message is too long.' });
-    }
+    if (!message) return res.status(400).json({ message: 'Chat message is required.' });
+    if (message.length > 2000) return res.status(400).json({ message: 'Chat message is too long.' });
 
     const userRef = db.collection('users').doc(req.user.uid);
 
@@ -409,11 +262,8 @@ app.post('/chat', authenticateToken, async (req, res) => {
             });
         }
 
-        // Deduct 1 credit before execution
-        await userRef.update({ credits: currentCredits - 1 });
-
         if (!googleApiKey) {
-            return res.status(500).json({ message: 'Google Generative AI API key is missing from the server configuration.' });
+            return res.status(500).json({ message: 'Google Generative AI API key is missing from server configuration.' });
         }
 
         const { generateText } = await import('ai');
@@ -425,13 +275,23 @@ app.post('/chat', authenticateToken, async (req, res) => {
             retrievedChunks = await retrieveRelevantChunks(message);
         } catch (error) {
             console.error('RAG retrieval error:', error);
-            // Refund credit if retrieval fails
-            await userRef.update({ credits: currentCredits });
             return res.status(503).json({ message: 'The knowledge base is temporarily unavailable. Please try again later.' });
         }
 
         const isRefusal = retrievedChunks.length === 0;
         const context = retrievedChunks.map((chunk, index) => `[Source ${index + 1}]\n${chunk.content}`).join('\n\n');
+
+        let detectedDomain = isRefusal ? 'out_of_scope' : 'platform';
+        const topChunkText = retrievedChunks[0]?.content?.toLowerCase() || '';
+        const lowerMessage = message.toLowerCase();
+
+        if (!isRefusal) {
+            if (lowerMessage.includes('sit313') || lowerMessage.includes('unit') || lowerMessage.includes('syllabus') || topChunkText.includes('sit313')) {
+                detectedDomain = 'unit_syllabus';
+            } else if (lowerMessage.includes('timmy') || lowerMessage.includes('author') || topChunkText.includes('timmy')) {
+                detectedDomain = 'author';
+            }
+        }
 
         if (isRefusal) {
             assistantMessage = 'I can only answer questions about Timmy Nguyen, DEV@Deakin, and Deakin University. I could not find relevant information in the approved knowledge base. Please rephrase your question or escalate it to a human.';
@@ -446,17 +306,12 @@ app.post('/chat', authenticateToken, async (req, res) => {
                 assistantMessage = result.text;
             } catch (error) {
                 console.error('Gemini response error:', error);
-                // Refund credit if AI generation fails
-                await userRef.update({ credits: currentCredits });
 
                 const statusCode = Number(error?.statusCode);
-                const providerMessage = typeof error?.message === 'string'
-                    ? error.message
-                    : 'Unknown Gemini provider error';
-                console.error('Gemini provider status:', statusCode || 'unknown');
+                const providerMessage = typeof error?.message === 'string' ? error.message : 'Unknown Gemini error';
                 if (statusCode === 429 || providerMessage.includes('quota')) {
                     return res.status(429).json({
-                        message: 'Gemini quota exceeded. Please wait for the quota to reset or check your Google AI Studio billing and rate limits.',
+                        message: 'Gemini quota exceeded. Please wait for quota to reset or check billing limits.',
                     });
                 }
                 return res.status(502).json({
@@ -465,12 +320,24 @@ app.post('/chat', authenticateToken, async (req, res) => {
             }
         }
 
+        let missions = userData.dailyMissions || DEFAULT_MISSIONS;
+        missions = missions.map((m) => {
+            if (m.id === 'm2' && !isRefusal && (detectedDomain === 'platform' || detectedDomain === 'author')) {
+                return { ...m, progress: Math.min(m.target, (m.progress || 0) + 1) };
+            }
+            if (m.id === 'm4' && !isRefusal && detectedDomain === 'unit_syllabus') {
+                return { ...m, progress: Math.min(m.target, (m.progress || 0) + 1) };
+            }
+            return m;
+        });
+
+        await userRef.update({
+            credits: currentCredits - 1,
+            dailyMissions: missions,
+        });
+
         const createdAt = new Date().toISOString();
-        const chatTurn = {
-            userMessage: message,
-            assistantMessage,
-            createdAt,
-        };
+        const chatTurn = { userMessage: message, assistantMessage, createdAt };
 
         const turnRef = await db
             .collection('users')
@@ -482,10 +349,11 @@ app.post('/chat', authenticateToken, async (req, res) => {
             message: assistantMessage,
             chatId: turnRef.id,
             createdAt,
-            domain: isRefusal ? 'out_of_scope' : 'platform',
-            confidence: isRefusal ? 0 : Math.round(Number(retrievedChunks[0].similarity) * 100),
+            domain: detectedDomain,
+            confidence: isRefusal ? 0 : Math.round(Number(retrievedChunks[0]?.similarity || 0.85) * 100),
             isRefusal,
             remainingCredits: currentCredits - 1,
+            missions,
         });
     } catch (error) {
         console.error('Firestore chat storage error:', error);
@@ -493,16 +361,8 @@ app.post('/chat', authenticateToken, async (req, res) => {
     }
 });
 
-/**
- * POST /chat/flag (protected - requires a valid JWT)
- * Supporting Feature A: Flags an AI response and escalates it for human review.
- * Rewards the user with +3 bonus credits upon successful flag submission.
- * Body: { messageId, flagReason, flagNotes?, messageContent? }
- */
 app.post('/chat/flag', authenticateToken, async (req, res) => {
-    if (!db) {
-        return res.status(500).json({ message: 'Server database configuration is missing.' });
-    }
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
     try {
         const { messageId, flagReason, flagNotes, messageContent } = req.body;
@@ -516,7 +376,7 @@ app.post('/chat/flag', authenticateToken, async (req, res) => {
             userEmail: req.user.email,
             messageId,
             messageContent: messageContent || '',
-            flagReason, // 'unhelpful' | 'inaccurate' | 'out_of_scope' | 'needs_human'
+            flagReason,
             flagNotes: flagNotes || '',
             status: 'pending_review',
             createdAt: new Date().toISOString(),
@@ -524,18 +384,32 @@ app.post('/chat/flag', authenticateToken, async (req, res) => {
 
         const docRef = await db.collection('flaggedMessages').add(flagData);
 
-        // Reward user +3 credits for flagging/feedback
         const userRef = db.collection('users').doc(req.user.uid);
         const userDoc = await userRef.get();
+        let missions = DEFAULT_MISSIONS;
+        let updatedCredits = 5;
+
         if (userDoc.exists) {
-            const currentCredits = userDoc.data().credits ?? 5;
-            await userRef.update({ credits: currentCredits + 3 });
+            const userData = userDoc.data();
+            missions = userData.dailyMissions || DEFAULT_MISSIONS;
+
+            missions = missions.map((m) => {
+                if (m.id === 'm3') return { ...m, progress: Math.min(m.target, (m.progress || 0) + 1) };
+                return m;
+            });
+
+            updatedCredits = (userData.credits ?? 5) + 3;
+            await userRef.update({
+                credits: updatedCredits,
+                dailyMissions: missions,
+            });
         }
 
         return res.status(200).json({
             message: 'Response flagged & escalated to Timmy Nguyen!',
             flagId: docRef.id,
             rewardCredits: 3,
+            missions,
         });
     } catch (error) {
         console.error('Error during response flagging:', error);
@@ -543,14 +417,8 @@ app.post('/chat/flag', authenticateToken, async (req, res) => {
     }
 });
 
-/**
- * GET /chat/history
- * Returns the authenticated user's most recent stored chat turns.
- */
 app.get('/chat/history', authenticateToken, async (req, res) => {
-    if (!db) {
-        return res.status(500).json({ message: 'Server database configuration is missing.' });
-    }
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
     try {
         const snapshot = await db
@@ -572,79 +440,104 @@ app.get('/chat/history', authenticateToken, async (req, res) => {
     }
 });
 
+app.delete('/chat/history', authenticateToken, async (req, res) => {
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
+
+    try {
+        const messagesRef = db
+            .collection('users')
+            .doc(req.user.uid)
+            .collection('chatMessages');
+
+        const snapshot = await messagesRef.get();
+        const batch = db.batch();
+        snapshot.docs.forEach((doc) => {
+            batch.delete(doc.ref);
+        });
+        await batch.commit();
+
+        return res.status(200).json({ message: 'Chat history cleared successfully.' });
+    } catch (error) {
+        console.error('Error clearing chat history:', error);
+        return res.status(500).json({ message: 'Failed to clear chat history.' });
+    }
+});
+
 // ========================================================================
 // ECONOMY & DAILY MISSIONS ROUTES
 // ========================================================================
 
-/**
- * GET /user/credits-missions (protected - requires a valid JWT)
- * Supporting Feature B: Fetches user credit balance, streak count, and daily mission list.
- */
 app.get('/user/credits-missions', authenticateToken, async (req, res) => {
-    if (!db) {
-        return res.status(500).json({ message: 'Server database configuration is missing.' });
-    }
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
     try {
         const userRef = db.collection('users').doc(req.user.uid);
         const userDoc = await userRef.get();
 
-        if (!userDoc.exists) {
-            return res.status(404).json({ message: 'Account not found.' });
-        }
+        if (!userDoc.exists) return res.status(404).json({ message: 'Account not found.' });
 
         const userData = userDoc.data();
         const plan = userData.plan || 'free';
         const baseCredits = plan === 'paid' ? 30 : 5;
 
-        const credits = userData.credits ?? baseCredits;
-        const streakDays = userData.streakDays ?? 1;
-        const missions = userData.dailyMissions ?? DEFAULT_MISSIONS;
+        const todayStr = new Date().toISOString().split('T')[0];
+        const lastLoginDate = userData.lastLoginDate || null;
 
-        return res.status(200).json({
-            credits,
-            streakDays,
-            plan,
-            missions,
-        });
+        let streakDays = userData.streakDays ?? 1;
+        let credits = userData.credits ?? baseCredits;
+        let missions = userData.dailyMissions || DEFAULT_MISSIONS;
+
+        if (lastLoginDate !== todayStr) {
+            if (lastLoginDate) {
+                const lastDate = new Date(lastLoginDate);
+                const currentDate = new Date(todayStr);
+                const diffTime = Math.abs(currentDate - lastDate);
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+                if (diffDays === 1) {
+                    streakDays += 1;
+                } else if (diffDays > 1) {
+                    streakDays = 1;
+                }
+            }
+
+            missions = DEFAULT_MISSIONS.map((m) => ({
+                ...m,
+                progress: m.id === 'm1' ? 1 : 0,
+                claimed: false,
+            }));
+
+            await userRef.update({
+                lastLoginDate: todayStr,
+                streakDays,
+                dailyMissions: missions,
+            });
+        }
+
+        return res.status(200).json({ credits, streakDays, plan, missions, lastLoginDate: todayStr });
     } catch (error) {
         console.error('Error fetching credits and missions:', error);
         return res.status(500).json({ message: 'Unable to fetch credit economy data.' });
     }
 });
 
-/**
- * POST /missions/claim (protected - requires a valid JWT)
- * Supporting Feature B: Claims credit rewards for completed daily missions.
- * Body: { missionId }
- */
 app.post('/missions/claim', authenticateToken, async (req, res) => {
-    if (!db) {
-        return res.status(500).json({ message: 'Server database configuration is missing.' });
-    }
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
     try {
         const { missionId } = req.body;
         const userRef = db.collection('users').doc(req.user.uid);
         const userDoc = await userRef.get();
 
-        if (!userDoc.exists) {
-            return res.status(404).json({ message: 'Account not found.' });
-        }
+        if (!userDoc.exists) return res.status(404).json({ message: 'Account not found.' });
 
         const userData = userDoc.data();
         let missions = userData.dailyMissions || DEFAULT_MISSIONS;
         let currentCredits = userData.credits ?? (userData.plan === 'paid' ? 30 : 5);
 
         const targetMission = missions.find((m) => m.id === missionId);
-        if (!targetMission) {
-            return res.status(404).json({ message: 'Mission not found.' });
-        }
-
-        if (targetMission.claimed) {
-            return res.status(400).json({ message: 'Mission reward has already been claimed.' });
-        }
-
+        if (!targetMission) return res.status(404).json({ message: 'Mission not found.' });
+        if (targetMission.claimed) return res.status(400).json({ message: 'Mission reward has already been claimed.' });
         if (targetMission.progress < targetMission.target) {
             return res.status(400).json({ message: 'Mission criteria not yet met.' });
         }
@@ -652,10 +545,7 @@ app.post('/missions/claim', authenticateToken, async (req, res) => {
         missions = missions.map((m) => (m.id === missionId ? { ...m, claimed: true } : m));
         const updatedCredits = currentCredits + targetMission.reward;
 
-        await userRef.update({
-            credits: updatedCredits,
-            dailyMissions: missions,
-        });
+        await userRef.update({ credits: updatedCredits, dailyMissions: missions });
 
         return res.status(200).json({
             message: `Claimed +${targetMission.reward} Credits!`,
@@ -668,52 +558,33 @@ app.post('/missions/claim', authenticateToken, async (req, res) => {
     }
 });
 
-/**
- * POST /upgrade (protected - requires a valid JWT)
- * Flips the authenticated user's plan from 'free' to 'paid'.
- *
- * IMPORTANT SCOPE NOTE: card details are validated on the FRONTEND only.
- * This route intentionally never receives or stores raw card data — it
- * simply trusts that the client has already handled payment collection
- * and just needs the account's plan flag updated.
- */
 app.post('/upgrade', authenticateToken, async (req, res) => {
-    if (!db) {
-        return res.status(500).json({ message: 'Server database configuration is missing.' });
-    }
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
-    const { uid } = req.user; // populated by authenticateToken from the JWT payload
+    const { uid } = req.user;
 
     try {
         const userRef = db.collection('users').doc(uid);
         const doc = await userRef.get();
 
-        if (!doc.exists) {
-            return res.status(404).json({ message: 'Account not found.' });
-        }
+        if (!doc.exists) return res.status(404).json({ message: 'Account not found.' });
 
         const userData = doc.data();
-
         if (userData.plan === 'paid') {
             return res.status(409).json({ message: 'You are already on the Paid plan.' });
         }
 
         await userRef.update({
             plan: 'paid',
-            credits: 30, // Upgrade bonus credits
+            credits: 30,
             upgradedAt: new Date().toISOString(),
         });
 
-        // Re-issue the JWT with the updated plan so the frontend's
-        // AuthContext reflects 'paid' immediately without requiring
-        // the user to log out and back in.
         const token = jwt.sign(
             { uid, email: userData.email, name: userData.name, plan: 'paid' },
             jwtSecret,
             { expiresIn: '2h' }
         );
-
-        console.log('User upgraded to Paid:', userData.email);
 
         res.status(200).json({
             message: 'Upgrade successful! Welcome to the Paid plan.',
@@ -729,14 +600,9 @@ app.post('/upgrade', authenticateToken, async (req, res) => {
 // ADMIN INGESTION ROUTE
 // ========================================================================
 
-/**
- * POST /admin/ingest-pdf (protected - requires a valid JWT and Admin privilege)
- * Admin route to ingest text chunk embeddings into Neon Postgres Vector DB.
- * Body: { domain, textContent } or file upload
- */
 app.post('/admin/ingest-pdf', authenticateToken, upload.single('pdf'), async (req, res) => {
     try {
-        if (req.user.email !== process.env.ADMIN_EMAIL) {
+        if (req.user.email !== 'timmynguyen01062006@gmail.com') {
             return res.status(403).json({ message: 'Admin access required for ingestion.' });
         }
 
@@ -765,43 +631,19 @@ app.post('/admin/ingest-pdf', authenticateToken, upload.single('pdf'), async (re
 // POSTS ROUTE
 // ========================================================================
 
-/**
- * POST /posts (protected - requires a valid JWT)
- * Creates a new Question or Article post in Firestore.
- * Body: { postType, postPlan, title, description?, abstract?, articleText?, tags? }
- *
- * This is the ONLY place posts are written to Firestore - the frontend
- * (Post.tsx) no longer talks to Firestore directly. Requiring a valid
- * JWT here is what actually enforces "must be logged in to post": the
- * userId and createdAt stamped on the document come from the verified
- * token/server clock, never from the client, so they can't be spoofed.
- */
 app.post('/posts', authenticateToken, async (req, res) => {
-    if (!db) {
-        return res.status(500).json({ message: 'Server database configuration is missing.' });
-    }
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
     const { postType, postPlan, title, description, abstract, articleText, tags } = req.body;
-
     const validationError = validatePostInput({ postType, postPlan, title, description, abstract, articleText, tags });
-    if (validationError) {
-        return res.status(400).json({ message: validationError });
-    }
+    if (validationError) return res.status(400).json({ message: validationError });
 
-    // req.user comes from authenticateToken's verified JWT payload - this
-    // is the trusted source for who's posting, not anything in req.body.
     const { uid, name, plan } = req.user;
 
-    // "Paid" posts are a Paid-account perk. The frontend already disables
-    // this option for free-plan users, but that's just UX - this is the
-    // actual enforcement, since anyone could otherwise call this route
-    // directly with postPlan: 'paid' regardless of what the client sends.
     if (postPlan === 'paid' && plan !== 'paid') {
         return res.status(403).json({ message: 'Only Paid-plan members can create Paid posts.' });
     }
 
-    // Normalize the comma-separated tags string into a clean array once,
-    // server-side, so nothing downstream has to re-parse it.
     const tagList = tags && typeof tags === 'string'
         ? tags.split(',').map((t) => t.trim()).filter(Boolean)
         : [];
@@ -825,7 +667,6 @@ app.post('/posts', authenticateToken, async (req, res) => {
 
     try {
         const ref = await db.collection('posts').add(postDoc);
-        console.log('Post created:', ref.id, 'by', uid);
         res.status(201).json({ message: 'Post created successfully!', id: ref.id });
     } catch (error) {
         console.error('Error creating post:', error);
@@ -833,81 +674,8 @@ app.post('/posts', authenticateToken, async (req, res) => {
     }
 });
 
-// ========================================================================
-// NEWSLETTER ROUTE
-// ========================================================================
-
-/**
- * POST /subscribe
- * Sends a "thank you for signing up" confirmation email via SendGrid.
- * Body: { signup_email }
- *
- * This is a standalone, unauthenticated route - anyone can subscribe
- * without an account, matching typical newsletter signup UX.
- */
-app.post('/subscribe', async (req, res) => {
-    const toEmail = req.body.signup_email;
-
-    if (!toEmail) {
-        return res.status(400).json({
-            message: 'Email address is required.'
-        });
-    }
-
-    if (!apiKey || !fromEmail) {
-        return res.status(500).json({
-            message: 'Server email configuration is missing.'
-        });
-    }
-
-    const msg = {
-        to: toEmail,
-        from: fromEmail, // must be a sender verified in your SendGrid account, or sends will fail
-        subject: 'Thank you for signing up!',
-        text: 'Thank you for signing up for our newsletter!',
-        html: '<p>Thank you for signing up for our newsletter!</p>',
-    };
-
-    try {
-        const response = await sgMail.send(msg);
-
-        console.log(
-            'Email sent to',
-            toEmail,
-            '- SendGrid Status:',
-            response[0].statusCode
-        );
-
-        res.status(200).json({
-            message: 'Subscription successful! Check your inbox.'
-        });
-
-    } catch (error) {
-        console.error('Error sending email:', error);
-
-        // SendGrid attaches extra detail - logged for debugging but
-        // never sent back to the client.
-        if (error.response) {
-            console.error('SendGrid error:', error.response.body);
-        }
-
-        res.status(500).json({
-            message: 'Something went wrong, please try again.'
-        });
-    }
-});
-
-/**
- * GET /posts
- * Returns posts for the Browse Posts page, filtered by the caller's plan.
- * BEFORE anything leaves the server:
- *   - logged out, or logged in on the Free plan -> free posts only
- *   - logged in on the Paid plan -> free + paid posts
- */
 app.get('/posts', optionalAuthenticate, async (req, res) => {
-    if (!db) {
-        return res.status(500).json({ message: 'Server database configuration is missing.' });
-    }
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
     const isPaidUser = req.user?.plan === 'paid';
 
@@ -923,6 +691,33 @@ app.get('/posts', optionalAuthenticate, async (req, res) => {
         res.status(200).json({ posts });
     } catch (error) {
         console.error('Error fetching posts:', error);
+        res.status(500).json({ message: 'Something went wrong, please try again.' });
+    }
+});
+
+// ========================================================================
+// NEWSLETTER ROUTE
+// ========================================================================
+
+app.post('/subscribe', async (req, res) => {
+    const toEmail = req.body.signup_email;
+
+    if (!toEmail) return res.status(400).json({ message: 'Email address is required.' });
+    if (!apiKey || !fromEmail) return res.status(500).json({ message: 'Server email configuration is missing.' });
+
+    const msg = {
+        to: toEmail,
+        from: fromEmail,
+        subject: 'Thank you for signing up!',
+        text: 'Thank you for signing up for our newsletter!',
+        html: '<p>Thank you for signing up for our newsletter!</p>',
+    };
+
+    try {
+        const response = await sgMail.send(msg);
+        res.status(200).json({ message: 'Subscription successful! Check your inbox.' });
+    } catch (error) {
+        console.error('Error sending email:', error);
         res.status(500).json({ message: 'Something went wrong, please try again.' });
     }
 });
