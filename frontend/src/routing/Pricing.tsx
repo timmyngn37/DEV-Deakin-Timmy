@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { IPricingFeature, BillingPeriod } from '../types'
 import PricingColumn from '../components/PricingColumn.tsx'
 import UpgradeModal from './UpgradeModal.tsx'
-import { useAuth } from '../context/AuthContext'
+import { useAuth } from '../customHooks/AuthContext.tsx'
 
 const features: IPricingFeature[] = [
     { label: 'Post questions, articles & tutorials', free: true, paid: true },

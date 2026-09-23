@@ -5,7 +5,7 @@ import App from './App.tsx'
 import { BrowserRouter } from 'react-router-dom'
 import Header from './components/Header.tsx'
 import Footer from './components/Footer.tsx'
-import { AuthProvider } from './context/AuthContext.tsx'
+import { AuthProvider } from './customHooks/AuthContext.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

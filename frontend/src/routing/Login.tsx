@@ -1,7 +1,7 @@
 import { useState, type SubmitEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { z } from "zod";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../customHooks/AuthContext";
 
 /**
  * Login.tsx

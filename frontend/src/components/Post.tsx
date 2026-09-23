@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { z } from 'zod'
 import QuestionPost from './QuestionPost'
 import ArticlePost from './ArticlePost'
-import { useAuth } from '../context/AuthContext'
+import { useAuth } from '../customHooks/AuthContext'
 
 /**
  * Post.tsx

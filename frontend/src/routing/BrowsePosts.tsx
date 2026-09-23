@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useAuth } from '../context/AuthContext'
+import { useAuth } from '../customHooks/AuthContext'
 import BrowsePostCard from '../components/BrowsePostCard'
 import BrowsePostModal from '../components/BrowsePostModal'
 import BrowsePostFilters, { DEFAULT_FILTERS, type BrowsePostFiltersState } from '../components/BrowsePostFilters'
