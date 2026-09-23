@@ -5,8 +5,9 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js",
-    "ingest:pdf": "tsx scripts/ingest-pdf.ts",
+    "start": "npm run ingest:corpus && node server.js",
+    "ingest:pdf": "tsx db/ingest-pdf.ts",
+    "ingest:corpus": "tsx db/ingest-corpus.ts",
     "reembed:documents": "tsx scripts/reembed-documents.ts"
   },
   "keywords": [],

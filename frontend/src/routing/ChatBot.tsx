@@ -193,8 +193,9 @@ function ChatBot() {
                 role: 'assistant',
                 content: data.message,
                 timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                domain: 'platform',
-                confidence: 91,
+                domain: data.domain ?? 'platform',
+                confidence: data.confidence,
+                isRefusal: data.isRefusal === true,
                 isFlagged: false,
             }
             setMessages((prev) => [...prev, botMsg])

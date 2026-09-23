@@ -14,7 +14,7 @@ import { pgTable, serial, text, vector, index } from "drizzle-orm/pg-core";
 export const documents = pgTable("documents", {
     id: serial("id").primaryKey(),                                      // Auto-incrementing primary key
     content: text("content").notNull(),                                 // Raw text content of the document chunk
-    embedding: vector("embedding", { dimensions: 1536 }).notNull(),     // OpenAI text-embedding-ada-002 vector (1536-dim)
+    embedding: vector("embedding", { dimensions: 1536 }).notNull(),     // Google Gemini embedding vector (1536-dim)
 }, (table) => [
     // HNSW index for fast approximate nearest-neighbour cosine similarity search
     index("documents_embedding_idx").using("hnsw", table.embedding.op("vector_cosine_ops")),
