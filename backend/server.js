@@ -1,10 +1,12 @@
 /**
  * server.js
  * ------------------------------------------------------------------
- * Express backend for the DEV@Deakin app. Handles three concerns:
- *   1. Auth        - /register, /login, /upgrade (JWT-based, backed by Firestore)
- *   2. Newsletter   - /subscribe (SendGrid transactional email)
- *   3. Middleware   - authenticateToken() gates any route that requires login
+ * Express backend for the DEV@Deakin app. Handles five concerns:
+ *   1. Auth            - /register, /login, /upgrade (JWT-based, backed by Firestore)
+ *   2. Newsletter      - /subscribe (SendGrid transactional email)
+ *   3. Posts           - /posts (GET, POST with role/plan enforcement)
+ *   4. RAG & AI Chat   - /chat, /chat/history, /chat/flag
+ *   5. Economy & Admin - /user/credits-missions, /missions/claim, /admin/ingest-pdf
  *
  * Auth model: we do NOT use Firebase Authentication on the client.
  * Instead, passwords are hashed with bcrypt and stored in Firestore
@@ -21,13 +23,17 @@ const sgMail = require('@sendgrid/mail');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
+const multer = require('multer');
 const { db } = require('./firebaseAdmin');
-const { retrieveRelevantChunks } = require('./rag');
+const { retrieveRelevantChunks, generateEmbedding, insertChunk } = require('./rag');
 
 // Load backend/.env regardless of which directory the process is started from.
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const app = express();
+
+// Configure multer for handling file uploads in memory for corpus ingestion
+const upload = multer({ storage: multer.memoryStorage() });
 
 // --- CORS ---------------------------------------------------------------
 // Only allow requests from origins listed in FRONTEND_URL (comma-separated
@@ -54,7 +60,7 @@ app.use(cors({
 }));
 
 // --- Global middleware ---------------------------------------------------
-app.use(express.json());                      // parses application/json bodies into req.body
+app.use(express.json());                  // parses application/json bodies into req.body
 app.use(express.urlencoded({ extended: true })); // parses form-encoded bodies (e.g. classic <form> posts)
 
 // --- Environment / config ----------------------------------------------
@@ -90,6 +96,14 @@ const authLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
 });
+
+// Default Daily Missions configuration used across economy endpoints
+const DEFAULT_MISSIONS = [
+    { id: 'm1', title: 'Daily Check-in', description: 'Log into DEV@Deakin to claim your daily bonus.', reward: 2, progress: 1, target: 1, claimed: false },
+    { id: 'm2', title: 'Knowledge Seeker', description: 'Ask 2 questions about Timmy or DEV@Deakin platform.', reward: 2, progress: 0, target: 2, claimed: false },
+    { id: 'm3', title: 'Quality Sentinel', description: 'Flag an unhelpful response or request human escalation.', reward: 3, progress: 0, target: 1, claimed: false },
+    { id: 'm4', title: 'Unit Scholar', description: 'Ask a question regarding the SIT313 syllabus.', reward: 2, progress: 0, target: 1, claimed: false },
+];
 
 // --- Validation helpers -------------------------------------------------
 
@@ -278,6 +292,8 @@ app.post('/register', authLimiter, async (req, res) => {
             email: email.toLowerCase(),
             passwordHash,
             plan: 'free', // all new accounts start on the free plan
+            credits: 5,
+            streakDays: 1,
             createdAt: new Date().toISOString(),
         });
 
@@ -297,7 +313,7 @@ app.post('/register', authLimiter, async (req, res) => {
  * Response: { message, token }
  *
  * The returned JWT encodes { uid, email, name, plan } and expires in 2h;
- * the frontend stores it (see AuthContext) and attaches it as a Bearertoken
+ * the frontend stores it (see AuthContext) and attaches it as a Bearer token
  * to any subsequent authenticated request.
  */
 app.post('/login', authLimiter, async (req, res) => {
@@ -361,7 +377,8 @@ app.post('/login', authLimiter, async (req, res) => {
 /**
  * POST /chat
  * Generates a Gemini response using retrieved Neon context when available,
- * then stores the authenticated user's chat turn in Firestore.
+ * verifies user credit quota, deducts 1 credit, and then stores the
+ * authenticated user's chat turn in Firestore.
  * Body: { message }
  */
 app.post('/chat', authenticateToken, async (req, res) => {
@@ -378,7 +395,23 @@ app.post('/chat', authenticateToken, async (req, res) => {
         return res.status(400).json({ message: 'Chat message is too long.' });
     }
 
+    const userRef = db.collection('users').doc(req.user.uid);
+
     try {
+        const userDoc = await userRef.get();
+        const userData = userDoc.exists ? userDoc.data() : {};
+        const baseCredits = req.user.plan === 'paid' ? 30 : 5;
+        const currentCredits = userData.credits ?? baseCredits;
+
+        if (currentCredits <= 0) {
+            return res.status(403).json({
+                message: 'You are out of credits. Complete daily missions or upgrade to Paid Plan!'
+            });
+        }
+
+        // Deduct 1 credit before execution
+        await userRef.update({ credits: currentCredits - 1 });
+
         if (!googleApiKey) {
             return res.status(500).json({ message: 'Google Generative AI API key is missing from the server configuration.' });
         }
@@ -392,6 +425,8 @@ app.post('/chat', authenticateToken, async (req, res) => {
             retrievedChunks = await retrieveRelevantChunks(message);
         } catch (error) {
             console.error('RAG retrieval error:', error);
+            // Refund credit if retrieval fails
+            await userRef.update({ credits: currentCredits });
             return res.status(503).json({ message: 'The knowledge base is temporarily unavailable. Please try again later.' });
         }
 
@@ -411,6 +446,9 @@ app.post('/chat', authenticateToken, async (req, res) => {
                 assistantMessage = result.text;
             } catch (error) {
                 console.error('Gemini response error:', error);
+                // Refund credit if AI generation fails
+                await userRef.update({ credits: currentCredits });
+
                 const statusCode = Number(error?.statusCode);
                 const providerMessage = typeof error?.message === 'string'
                     ? error.message
@@ -447,10 +485,61 @@ app.post('/chat', authenticateToken, async (req, res) => {
             domain: isRefusal ? 'out_of_scope' : 'platform',
             confidence: isRefusal ? 0 : Math.round(Number(retrievedChunks[0].similarity) * 100),
             isRefusal,
+            remainingCredits: currentCredits - 1,
         });
     } catch (error) {
         console.error('Firestore chat storage error:', error);
         res.status(500).json({ message: 'The response was generated, but could not be stored.' });
+    }
+});
+
+/**
+ * POST /chat/flag (protected - requires a valid JWT)
+ * Supporting Feature A: Flags an AI response and escalates it for human review.
+ * Rewards the user with +3 bonus credits upon successful flag submission.
+ * Body: { messageId, flagReason, flagNotes?, messageContent? }
+ */
+app.post('/chat/flag', authenticateToken, async (req, res) => {
+    if (!db) {
+        return res.status(500).json({ message: 'Server database configuration is missing.' });
+    }
+
+    try {
+        const { messageId, flagReason, flagNotes, messageContent } = req.body;
+
+        if (!messageId || !flagReason) {
+            return res.status(400).json({ message: 'Missing messageId or flagReason.' });
+        }
+
+        const flagData = {
+            userId: req.user.uid,
+            userEmail: req.user.email,
+            messageId,
+            messageContent: messageContent || '',
+            flagReason, // 'unhelpful' | 'inaccurate' | 'out_of_scope' | 'needs_human'
+            flagNotes: flagNotes || '',
+            status: 'pending_review',
+            createdAt: new Date().toISOString(),
+        };
+
+        const docRef = await db.collection('flaggedMessages').add(flagData);
+
+        // Reward user +3 credits for flagging/feedback
+        const userRef = db.collection('users').doc(req.user.uid);
+        const userDoc = await userRef.get();
+        if (userDoc.exists) {
+            const currentCredits = userDoc.data().credits ?? 5;
+            await userRef.update({ credits: currentCredits + 3 });
+        }
+
+        return res.status(200).json({
+            message: 'Response flagged & escalated to Timmy Nguyen!',
+            flagId: docRef.id,
+            rewardCredits: 3,
+        });
+    } catch (error) {
+        console.error('Error during response flagging:', error);
+        return res.status(500).json({ message: 'Something went wrong while flagging response.' });
     }
 });
 
@@ -480,6 +569,102 @@ app.get('/chat/history', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('Error fetching chat history:', error);
         res.status(500).json({ message: 'Unable to load chat history.' });
+    }
+});
+
+// ========================================================================
+// ECONOMY & DAILY MISSIONS ROUTES
+// ========================================================================
+
+/**
+ * GET /user/credits-missions (protected - requires a valid JWT)
+ * Supporting Feature B: Fetches user credit balance, streak count, and daily mission list.
+ */
+app.get('/user/credits-missions', authenticateToken, async (req, res) => {
+    if (!db) {
+        return res.status(500).json({ message: 'Server database configuration is missing.' });
+    }
+
+    try {
+        const userRef = db.collection('users').doc(req.user.uid);
+        const userDoc = await userRef.get();
+
+        if (!userDoc.exists) {
+            return res.status(404).json({ message: 'Account not found.' });
+        }
+
+        const userData = userDoc.data();
+        const plan = userData.plan || 'free';
+        const baseCredits = plan === 'paid' ? 30 : 5;
+
+        const credits = userData.credits ?? baseCredits;
+        const streakDays = userData.streakDays ?? 1;
+        const missions = userData.dailyMissions ?? DEFAULT_MISSIONS;
+
+        return res.status(200).json({
+            credits,
+            streakDays,
+            plan,
+            missions,
+        });
+    } catch (error) {
+        console.error('Error fetching credits and missions:', error);
+        return res.status(500).json({ message: 'Unable to fetch credit economy data.' });
+    }
+});
+
+/**
+ * POST /missions/claim (protected - requires a valid JWT)
+ * Supporting Feature B: Claims credit rewards for completed daily missions.
+ * Body: { missionId }
+ */
+app.post('/missions/claim', authenticateToken, async (req, res) => {
+    if (!db) {
+        return res.status(500).json({ message: 'Server database configuration is missing.' });
+    }
+
+    try {
+        const { missionId } = req.body;
+        const userRef = db.collection('users').doc(req.user.uid);
+        const userDoc = await userRef.get();
+
+        if (!userDoc.exists) {
+            return res.status(404).json({ message: 'Account not found.' });
+        }
+
+        const userData = userDoc.data();
+        let missions = userData.dailyMissions || DEFAULT_MISSIONS;
+        let currentCredits = userData.credits ?? (userData.plan === 'paid' ? 30 : 5);
+
+        const targetMission = missions.find((m) => m.id === missionId);
+        if (!targetMission) {
+            return res.status(404).json({ message: 'Mission not found.' });
+        }
+
+        if (targetMission.claimed) {
+            return res.status(400).json({ message: 'Mission reward has already been claimed.' });
+        }
+
+        if (targetMission.progress < targetMission.target) {
+            return res.status(400).json({ message: 'Mission criteria not yet met.' });
+        }
+
+        missions = missions.map((m) => (m.id === missionId ? { ...m, claimed: true } : m));
+        const updatedCredits = currentCredits + targetMission.reward;
+
+        await userRef.update({
+            credits: updatedCredits,
+            dailyMissions: missions,
+        });
+
+        return res.status(200).json({
+            message: `Claimed +${targetMission.reward} Credits!`,
+            credits: updatedCredits,
+            missions,
+        });
+    } catch (error) {
+        console.error('Error claiming mission:', error);
+        return res.status(500).json({ message: 'Something went wrong while claiming mission.' });
     }
 });
 
@@ -515,6 +700,7 @@ app.post('/upgrade', authenticateToken, async (req, res) => {
 
         await userRef.update({
             plan: 'paid',
+            credits: 30, // Upgrade bonus credits
             upgradedAt: new Date().toISOString(),
         });
 
@@ -536,6 +722,42 @@ app.post('/upgrade', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('Error during upgrade:', error);
         res.status(500).json({ message: 'Something went wrong, please try again.' });
+    }
+});
+
+// ========================================================================
+// ADMIN INGESTION ROUTE
+// ========================================================================
+
+/**
+ * POST /admin/ingest-pdf (protected - requires a valid JWT and Admin privilege)
+ * Admin route to ingest text chunk embeddings into Neon Postgres Vector DB.
+ * Body: { domain, textContent } or file upload
+ */
+app.post('/admin/ingest-pdf', authenticateToken, upload.single('pdf'), async (req, res) => {
+    try {
+        if (req.user.email !== process.env.ADMIN_EMAIL) {
+            return res.status(403).json({ message: 'Admin access required for ingestion.' });
+        }
+
+        const textContent = req.body.textContent || (req.file ? req.file.buffer.toString('utf-8') : '');
+
+        if (!textContent || !textContent.trim()) {
+            return res.status(400).json({ message: 'Text content is required for ingestion.' });
+        }
+
+        const targetDomain = req.body.domain || 'platform';
+        const embedding = await generateEmbedding(textContent);
+
+        await insertChunk(textContent, embedding, targetDomain);
+
+        return res.status(200).json({
+            message: 'Corpus chunk successfully ingested into Vector DB!',
+            domain: targetDomain,
+        });
+    } catch (error) {
+        console.error('Error during PDF corpus ingestion:', error);
+        return res.status(500).json({ message: 'Something went wrong during corpus ingestion.' });
     }
 });
 
