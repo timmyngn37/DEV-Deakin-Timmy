@@ -62,7 +62,7 @@ Gates assistant usage with a daily credit economy integrated into membership pla
 - **Paid Plan Baseline**: 30 Credits / day.
 - **Query Cost**: 1 Credit per assistant question.
 
-### Mission Matrix (4 Active Missions - `m5` Removed)
+### Mission Matrix (4 Active Missions)
 
 | Mission ID | Title | Description | Target | Reward | Trigger Condition |
 | :--- | :--- | :--- | :---: | :---: | :--- |
