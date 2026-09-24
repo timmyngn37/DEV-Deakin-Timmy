@@ -96,16 +96,6 @@ function ChatBot() {
                             {isPaid ? 'Paid Plan (30 Base)' : 'Free Plan (5 Base)'}
                         </span>
                     </div>
-
-                    <div className="economy-badge credits-indicator">
-                        <span>⚡</span>
-                        <span>{economy.credits} Credits Available</span>
-                    </div>
-
-                    <div className="economy-badge streak-indicator">
-                        <span>🔥</span>
-                        <span>{economy.streakDays}-Day Streak</span>
-                    </div>
                 </div>
 
                 <button
@@ -306,16 +296,6 @@ function ChatBot() {
                                                     <span>Flag Response</span>
                                                 </button>
                                             )}
-
-                                            <button
-                                                type="button"
-                                                className="msg-action-btn escalate-btn"
-                                                onClick={() => openFlagModal(msg)}
-                                                title="Escalate to human review"
-                                            >
-                                                <span>👤</span>
-                                                <span>Escalate to Timmy</span>
-                                            </button>
                                         </div>
                                     )}
                                 </div>
@@ -451,7 +431,7 @@ function ChatBot() {
                                         color: hasClaimableOnPrevPages ? '#34d399' : 'inherit',
                                     }}
                                 >
-                                    ← {hasClaimableOnPrevPages ? 'Previous (⚡ Ready!)' : 'Previous'}
+                                    ← {hasClaimableOnPrevPages ? 'Previous (⚡)' : 'Previous'}
                                 </button>
                                 <span style={{ fontSize: '0.75rem', color: '#a0aec0' }}>
                                     Page {economy.currentPage} / {totalPages}
@@ -468,7 +448,7 @@ function ChatBot() {
                                         color: hasClaimableOnNextPages ? '#34d399' : 'inherit',
                                     }}
                                 >
-                                    {hasClaimableOnNextPages ? 'Next (⚡ Ready!)' : 'Next'} →
+                                    {hasClaimableOnNextPages ? 'Next (⚡)' : 'Next'} →
                                 </button>
                             </div>
                         )}
@@ -582,7 +562,7 @@ function ChatBot() {
                                 className="flag-submit-btn"
                                 onClick={submitFlag}
                             >
-                                Submit Flag & Escalate (+3 ⚡ Reward)
+                                Submit Flag
                             </button>
                         </div>
                     </div>

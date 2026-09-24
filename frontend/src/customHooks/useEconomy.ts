@@ -11,11 +11,10 @@ import type { IMissionItem, IEconomyData } from '../types'
 const MISSIONS_PER_PAGE = 2
 
 const INITIAL_MISSIONS: IMissionItem[] = [
-    { id: 'm1', title: 'Daily Check-in', description: 'Log into DEV@Deakin to claim your daily bonus.', reward: 2, progress: 1, target: 1, claimed: false },
+    { id: 'm1', title: 'Daily Check-in', description: 'Log into DEV@Deakin to claim your daily bonus.', reward: 2, progress: 0, target: 1, claimed: false },
     { id: 'm2', title: 'Knowledge Seeker', description: 'Ask 2 questions about Timmy or DEV@Deakin platform.', reward: 2, progress: 0, target: 2, claimed: false },
     { id: 'm3', title: 'Quality Sentinel', description: 'Flag an unhelpful response or request human escalation.', reward: 3, progress: 0, target: 1, claimed: false },
     { id: 'm4', title: 'Unit Scholar', description: 'Ask a question regarding the SIT313 syllabus.', reward: 2, progress: 0, target: 1, claimed: false },
-    { id: 'm5', title: 'Platform Supporter', description: 'Engage with daily platform tutorials or features.', reward: 2, progress: 0, target: 1, claimed: false },
 ]
 
 export interface EconomyState {
@@ -73,7 +72,7 @@ function economyReducer(state: EconomyState, action: EconomyAction): EconomyStat
 export function useEconomy(token: string | null, isPaid: boolean) {
     const [economy, dispatch] = useReducer(economyReducer, {
         credits: isPaid ? 30 : 5,
-        streakDays: 1,
+        streakDays: 0,
         missions: INITIAL_MISSIONS,
         currentPage: 1,
     })
@@ -92,7 +91,20 @@ export function useEconomy(token: string | null, isPaid: boolean) {
     )
 
     useEffect(() => {
-        if (!token) return
+        // Reset state upon logout
+        if (!token) {
+            dispatch({
+                type: 'SET_INITIAL_DATA',
+                payload: {
+                    credits: isPaid ? 30 : 5,
+                    streakDays: 0,
+                    missions: INITIAL_MISSIONS,
+                },
+            })
+            dispatch({ type: 'SET_MISSION_PAGE', payload: 1 })
+            return
+        }
+
         let isMounted = true
 
         async function fetchEconomy() {
@@ -122,7 +134,7 @@ export function useEconomy(token: string | null, isPaid: boolean) {
         return () => {
             isMounted = false
         }
-    }, [token])
+    }, [token, isPaid])
 
     const claimMission = (id: string, onSuccessToast: (msg: string) => void) => {
         if (!token) {

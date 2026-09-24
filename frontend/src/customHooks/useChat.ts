@@ -46,7 +46,24 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
         }
     )
 
-    // Sync active session selection to localStorage
+    // ========================================================================
+    // LOGOUT CLEANUP EFFECT (RESETS ALL CHAT & PAGINATION STATE)
+    // ========================================================================
+    useEffect(() => {
+        if (!token) {
+            setSessions([])
+            setActiveSessionId(null)
+            setMessages([])
+            setInputText('')
+            setHistoryPage(1)
+            setHasMoreHistory(true)
+            setIsLoadingHistory(false)
+            setFlagModalTarget(null)
+            localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
+        }
+    }, [token])
+
+    // Sync active session selection state to localStorage
     useEffect(() => {
         if (activeSessionId) {
             localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, activeSessionId)
@@ -55,7 +72,7 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
         }
     }, [activeSessionId])
 
-    // Fetch User's Chat Sessions
+    // Fetch user's existing chat sessions
     useEffect(() => {
         if (!token) return
         let isMounted = true
@@ -70,7 +87,6 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                     if (isMounted && Array.isArray(data.sessions)) {
                         setSessions(data.sessions)
 
-                        // Preserve stored active session if it exists, otherwise default to first available
                         const storedId = localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
                         const existsInFetched = data.sessions.some((s: IChatSession) => s.id === storedId)
 
@@ -94,7 +110,7 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
         }
     }, [token])
 
-    // Load History for Active Session
+    // Fetch conversation history for active session
     useEffect(() => {
         if (!token || !activeSessionId) {
             setMessages([])
@@ -111,14 +127,22 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                     const data = await res.json()
                     if (isMounted && Array.isArray(data.history)) {
                         const storedMessages: IDisplayMessage[] = data.history.flatMap(
-                            (turn: { id: string; userMessage: string; assistantMessage: string; createdAt: string }) => {
+                            (turn: { id: string; userMessage: string; assistantMessage: string; createdAt: string; domain?: any; isRefusal?: boolean }) => {
                                 const timestamp = new Date(turn.createdAt).toLocaleTimeString([], {
                                     hour: '2-digit',
                                     minute: '2-digit',
                                 })
                                 return [
                                     { id: `${turn.id}-user`, role: 'user' as const, content: turn.userMessage, timestamp, status: 'sent' as const },
-                                    { id: `${turn.id}-assistant`, role: 'assistant' as const, content: turn.assistantMessage, timestamp, domain: 'platform' as const, isFlagged: false },
+                                    {
+                                        id: `${turn.id}-assistant`,
+                                        role: 'assistant' as const,
+                                        content: turn.assistantMessage,
+                                        timestamp,
+                                        domain: turn.isRefusal || turn.domain === 'out_of_scope' ? 'none' : turn.domain,
+                                        isFlagged: false,
+                                        isRefusal: turn.isRefusal === true
+                                    },
                                 ]
                             }
                         )
@@ -196,14 +220,22 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                 const data = await res.json()
                 if (Array.isArray(data.history) && data.history.length > 0) {
                     const olderMessages: IDisplayMessage[] = data.history.flatMap(
-                        (turn: { id: string; userMessage: string; assistantMessage: string; createdAt: string }) => {
+                        (turn: { id: string; userMessage: string; assistantMessage: string; createdAt: string; domain?: any; isRefusal?: boolean }) => {
                             const timestamp = new Date(turn.createdAt).toLocaleTimeString([], {
                                 hour: '2-digit',
                                 minute: '2-digit',
                             })
                             return [
                                 { id: `${turn.id}-user`, role: 'user' as const, content: turn.userMessage, timestamp, status: 'sent' as const },
-                                { id: `${turn.id}-assistant`, role: 'assistant' as const, content: turn.assistantMessage, timestamp, domain: 'platform' as const, isFlagged: false },
+                                {
+                                    id: `${turn.id}-assistant`,
+                                    role: 'assistant' as const,
+                                    content: turn.assistantMessage,
+                                    timestamp,
+                                    domain: turn.isRefusal || turn.domain === 'out_of_scope' ? 'none' : turn.domain,
+                                    isFlagged: false,
+                                    isRefusal: turn.isRefusal === true
+                                },
                             ]
                         }
                     )
@@ -279,7 +311,7 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                     role: 'assistant',
                     content: data.message,
                     timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                    domain: data.domain ?? 'platform',
+                    domain: data.isRefusal || data.domain === 'out_of_scope' ? 'none' : data.domain,
                     confidence: data.confidence,
                     isRefusal: data.isRefusal === true,
                     isFlagged: false,
