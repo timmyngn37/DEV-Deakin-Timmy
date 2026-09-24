@@ -1,19 +1,27 @@
 /**
  * src/hooks/useChat.ts
  * ------------------------------------------------------------------
- * Encapsulates chat state management, message sending, and flagging
- * functionality, while integrating with the credit economy system.
+ * Encapsulates chat state management, multi-session threads, message
+ * sending, and flagging functionality integrated with credit economy.
  * ------------------------------------------------------------------
  */
 
 import { useState, useEffect, useTransition, useOptimistic, type Dispatch } from 'react'
-import type { IDisplayMessage, FlagReason } from '../types'
+import type { IDisplayMessage, IChatSession, FlagReason } from '../types'
 import type { EconomyAction } from './useEconomy'
 
+const HISTORY_PAGE_SIZE = 20
+
 export function useChat(token: string | null, credits: number, dispatchEconomy: Dispatch<EconomyAction>) {
+    const [sessions, setSessions] = useState<IChatSession[]>([])
+    const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
     const [messages, setMessages] = useState<IDisplayMessage[]>([])
     const [inputText, setInputText] = useState('')
     const [isPending, startTransition] = useTransition()
+
+    const [historyPage, setHistoryPage] = useState(1)
+    const [hasMoreHistory, setHasMoreHistory] = useState(true)
+    const [isLoadingHistory, setIsLoadingHistory] = useState(false)
 
     const [flagModalTarget, setFlagModalTarget] = useState<IDisplayMessage | null>(null)
     const [flagReason, setFlagReason] = useState<FlagReason>('unhelpful')
@@ -35,13 +43,47 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
         }
     )
 
+    // Fetch User's Chat Sessions
     useEffect(() => {
         if (!token) return
         let isMounted = true
 
-        async function fetchHistory() {
+        async function fetchSessions() {
             try {
-                const res = await fetch('http://localhost:3000/chat/history', {
+                const res = await fetch('http://localhost:3000/chat/sessions', {
+                    headers: { Authorization: `Bearer ${token}` },
+                })
+                if (res.ok) {
+                    const data = await res.json()
+                    if (isMounted && Array.isArray(data.sessions)) {
+                        setSessions(data.sessions)
+                        if (data.sessions.length > 0 && !activeSessionId) {
+                            setActiveSessionId(data.sessions[0].id)
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error('Error fetching chat sessions:', err)
+            }
+        }
+
+        fetchSessions()
+        return () => {
+            isMounted = false
+        }
+    }, [token])
+
+    // Load History for Active Session
+    useEffect(() => {
+        if (!token || !activeSessionId) {
+            setMessages([])
+            return
+        }
+        let isMounted = true
+
+        async function fetchInitialHistory() {
+            try {
+                const res = await fetch(`http://localhost:3000/chat/history?sessionId=${activeSessionId}&page=1&limit=${HISTORY_PAGE_SIZE}`, {
                     headers: { Authorization: `Bearer ${token}` },
                 })
                 if (res.ok) {
@@ -54,12 +96,14 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                                     minute: '2-digit',
                                 })
                                 return [
-                                    { id: `${turn.id}-user`, role: 'user' as const, content: turn.userMessage, timestamp },
+                                    { id: `${turn.id}-user`, role: 'user' as const, content: turn.userMessage, timestamp, status: 'sent' as const },
                                     { id: `${turn.id}-assistant`, role: 'assistant' as const, content: turn.assistantMessage, timestamp, domain: 'platform' as const, isFlagged: false },
                                 ]
                             }
                         )
                         setMessages(storedMessages)
+                        setHasMoreHistory(data.hasMore)
+                        setHistoryPage(1)
                     }
                 }
             } catch (err) {
@@ -67,11 +111,93 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
             }
         }
 
-        fetchHistory()
+        fetchInitialHistory()
         return () => {
             isMounted = false
         }
-    }, [token])
+    }, [token, activeSessionId])
+
+    const handleCreateNewSession = async () => {
+        if (!token) return
+        try {
+            const res = await fetch('http://localhost:3000/chat/sessions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({ title: 'New Conversation' }),
+            })
+            if (res.ok) {
+                const newSess = await res.json()
+                setSessions((prev) => [newSess, ...prev])
+                setActiveSessionId(newSess.id)
+                setMessages([])
+            }
+        } catch (err) {
+            console.error('Error creating new session:', err)
+        }
+    }
+
+    const handleDeleteSession = async (sessionIdToDelete: string) => {
+        if (!token) return
+        if (!window.confirm('Are you sure you want to delete this chat thread?')) return
+
+        try {
+            const res = await fetch(`http://localhost:3000/chat/sessions/${sessionIdToDelete}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` },
+            })
+            if (res.ok) {
+                const updated = sessions.filter((s) => s.id !== sessionIdToDelete)
+                setSessions(updated)
+                if (activeSessionId === sessionIdToDelete) {
+                    setActiveSessionId(updated.length > 0 ? updated[0].id : null)
+                }
+            }
+        } catch (err) {
+            console.error('Error deleting session:', err)
+        }
+    }
+
+    const loadOlderHistory = async () => {
+        if (!token || !activeSessionId || isLoadingHistory || !hasMoreHistory) return
+
+        setIsLoadingHistory(true)
+        const nextPage = historyPage + 1
+
+        try {
+            const res = await fetch(`http://localhost:3000/chat/history?sessionId=${activeSessionId}&page=${nextPage}&limit=${HISTORY_PAGE_SIZE}`, {
+                headers: { Authorization: `Bearer ${token}` },
+            })
+            if (res.ok) {
+                const data = await res.json()
+                if (Array.isArray(data.history) && data.history.length > 0) {
+                    const olderMessages: IDisplayMessage[] = data.history.flatMap(
+                        (turn: { id: string; userMessage: string; assistantMessage: string; createdAt: string }) => {
+                            const timestamp = new Date(turn.createdAt).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                            })
+                            return [
+                                { id: `${turn.id}-user`, role: 'user' as const, content: turn.userMessage, timestamp, status: 'sent' as const },
+                                { id: `${turn.id}-assistant`, role: 'assistant' as const, content: turn.assistantMessage, timestamp, domain: 'platform' as const, isFlagged: false },
+                            ]
+                        }
+                    )
+                    setMessages((prev) => [...olderMessages, ...prev])
+                    setHistoryPage(nextPage)
+                    setHasMoreHistory(data.hasMore)
+                } else {
+                    setHasMoreHistory(false)
+                }
+            }
+        } catch (err) {
+            console.error('Error loading older history:', err)
+        } finally {
+            setIsLoadingHistory(false)
+        }
+    }
 
     const handleSendMessage = (e: { preventDefault: () => void }) => {
         e.preventDefault()
@@ -94,6 +220,7 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
             role: 'user',
             content: text,
             timestamp: timeStr,
+            status: 'pending',
         }
 
         dispatchEconomy({ type: 'DEDUCT_CREDIT', payload: 1 })
@@ -109,13 +236,20 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                         'Content-Type': 'application/json',
                         Authorization: `Bearer ${token}`,
                     },
-                    body: JSON.stringify({ message: text }),
+                    body: JSON.stringify({ message: text, sessionId: activeSessionId }),
                 })
 
                 const data = await response.json()
                 if (!response.ok) {
                     throw new Error(data.message || 'Unable to send message.')
                 }
+
+                if (!activeSessionId && data.sessionId) {
+                    setActiveSessionId(data.sessionId)
+                    setSessions((prev) => [{ id: data.sessionId, title: text, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, ...prev])
+                }
+
+                const confirmedUserMsg: IDisplayMessage = { ...userMsg, status: 'sent' }
 
                 const botMsg: IDisplayMessage = {
                     id: data.chatId || `msg-${Date.now() + 1}`,
@@ -128,7 +262,7 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                     isFlagged: false,
                 }
 
-                setMessages((prev) => [...prev, userMsg, botMsg])
+                setMessages((prev) => [...prev, confirmedUserMsg, botMsg])
 
                 if (Array.isArray(data.missions)) {
                     dispatchEconomy({
@@ -149,28 +283,6 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                 }
             }
         })
-    }
-
-    const handleClearChat = async () => {
-        if (!token) return
-
-        if (!window.confirm('Are you sure you want to clear your chat history?')) return
-
-        try {
-            const res = await fetch('http://localhost:3000/chat/history', {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${token}` },
-            })
-
-            if (res.ok) {
-                setMessages([])
-            } else {
-                alert('Failed to clear chat history on server.')
-            }
-        } catch (err) {
-            console.error('Error clearing chat history:', err)
-            alert('Server error while clearing chat history.')
-        }
     }
 
     const openFlagModal = (msg: IDisplayMessage) => {
@@ -232,14 +344,21 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
     }
 
     return {
+        sessions,
+        activeSessionId,
+        setActiveSessionId,
+        handleCreateNewSession,
+        handleDeleteSession,
         messages,
         setMessages,
         inputText,
         setInputText,
         isPending,
         optimisticMessages,
+        loadOlderHistory,
+        hasMoreHistory,
+        isLoadingHistory,
         handleSendMessage,
-        handleClearChat,
         flagModalTarget,
         setFlagModalTarget,
         flagReason,

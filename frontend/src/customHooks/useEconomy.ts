@@ -1,21 +1,4 @@
-/**
- * useEconomy.ts
- * ------------------------------------------------------------------
- * This hook manages the user's credit balance, streak days, and daily missions.
- * It provides functions to claim mission rewards, increment mission progress,
- * and navigate through paginated missions. The hook fetches initial economy
- * data from the backend and updates the state accordingly.
- * ------------------------------------------------------------------
- */
-
-/**
- * src/hooks/useEconomy.ts
- * ------------------------------------------------------------------
- * Custom React Hook for DEV@Deakin Credit Economy & Daily Missions.
- * ------------------------------------------------------------------
- */
-
-import { useEffect, useReducer } from 'react'
+import { useEffect, useReducer, useMemo, useOptimistic, useTransition } from 'react'
 import type { IMissionItem, IEconomyData } from '../types'
 
 const MISSIONS_PER_PAGE = 2
@@ -25,6 +8,7 @@ const INITIAL_MISSIONS: IMissionItem[] = [
     { id: 'm2', title: 'Knowledge Seeker', description: 'Ask 2 questions about Timmy or DEV@Deakin platform.', reward: 2, progress: 0, target: 2, claimed: false },
     { id: 'm3', title: 'Quality Sentinel', description: 'Flag an unhelpful response or request human escalation.', reward: 3, progress: 0, target: 1, claimed: false },
     { id: 'm4', title: 'Unit Scholar', description: 'Ask a question regarding the SIT313 syllabus.', reward: 2, progress: 0, target: 1, claimed: false },
+    { id: 'm5', title: 'Platform Supporter', description: 'Engage with daily platform tutorials or features.', reward: 2, progress: 0, target: 1, claimed: false },
 ]
 
 export interface EconomyState {
@@ -87,6 +71,19 @@ export function useEconomy(token: string | null, isPaid: boolean) {
         currentPage: 1,
     })
 
+    const [, startTransition] = useTransition()
+
+    const [optimisticEconomy, setOptimisticEconomy] = useOptimistic(
+        economy,
+        (current, action: { type: 'CLAIM_MISSION'; missionId: string; reward: number }) => ({
+            ...current,
+            credits: current.credits + action.reward,
+            missions: current.missions.map((m) =>
+                m.id === action.missionId ? { ...m, claimed: true } : m
+            ),
+        })
+    )
+
     useEffect(() => {
         if (!token) return
         let isMounted = true
@@ -120,7 +117,7 @@ export function useEconomy(token: string | null, isPaid: boolean) {
         }
     }, [token])
 
-    const claimMission = async (id: string, onSuccessToast: (msg: string) => void) => {
+    const claimMission = (id: string, onSuccessToast: (msg: string) => void) => {
         if (!token) {
             alert('Session expired. Please log in again.')
             return
@@ -129,39 +126,75 @@ export function useEconomy(token: string | null, isPaid: boolean) {
         const target = economy.missions.find((m) => m.id === id)
         if (!target || target.claimed || target.progress < target.target) return
 
-        try {
-            const response = await fetch('http://localhost:3000/missions/claim', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
-                },
-                body: JSON.stringify({ missionId: id }),
-            })
+        startTransition(async () => {
+            setOptimisticEconomy({ type: 'CLAIM_MISSION', missionId: id, reward: target.reward })
 
-            const data = await response.json()
+            try {
+                const response = await fetch('http://localhost:3000/missions/claim', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({ missionId: id }),
+                })
 
-            if (response.ok) {
-                dispatch({ type: 'CLAIM_MISSION', payload: { missionId: id, reward: target.reward } })
-                onSuccessToast(`Claimed +${target.reward} credits!`)
-            } else {
-                alert(data.message || 'Unable to claim reward.')
+                const data = await response.json()
+
+                if (response.ok) {
+                    dispatch({ type: 'CLAIM_MISSION', payload: { missionId: id, reward: target.reward } })
+                    onSuccessToast(`Claimed +${target.reward} credits!`)
+                } else {
+                    alert(data.message || 'Unable to claim reward.')
+                }
+            } catch (err) {
+                console.error('Error claiming mission:', err)
+                alert('Server connection error. Please ensure Node backend is running on http://localhost:3000')
             }
-        } catch (err) {
-            console.error('Error claiming mission:', err)
-            alert('Server connection error. Please ensure Node backend is running on http://localhost:3000')
-        }
+        })
     }
 
-    const totalPages = Math.ceil(economy.missions.length / MISSIONS_PER_PAGE)
-    const startIndex = (economy.currentPage - 1) * MISSIONS_PER_PAGE
-    const currentMissionsPage = economy.missions.slice(startIndex, startIndex + MISSIONS_PER_PAGE)
+    const totalPages = useMemo(() => {
+        return Math.ceil(optimisticEconomy.missions.length / MISSIONS_PER_PAGE) || 1
+    }, [optimisticEconomy.missions.length])
+
+    const currentMissionsPage = useMemo(() => {
+        const startIndex = (optimisticEconomy.currentPage - 1) * MISSIONS_PER_PAGE
+        return optimisticEconomy.missions.slice(startIndex, startIndex + MISSIONS_PER_PAGE)
+    }, [optimisticEconomy.missions, optimisticEconomy.currentPage])
+
+    const remainingCredits = useMemo(() => {
+        return optimisticEconomy.credits
+    }, [optimisticEconomy.credits])
+
+    // Derived states for completed/claimable mission notifications across pages
+    const totalClaimableCount = useMemo(() => {
+        return optimisticEconomy.missions.filter((m) => !m.claimed && m.progress >= m.target).length
+    }, [optimisticEconomy.missions])
+
+    const hasClaimableOnNextPages = useMemo(() => {
+        return optimisticEconomy.missions.some((m, index) => {
+            const pageNum = Math.floor(index / MISSIONS_PER_PAGE) + 1
+            return !m.claimed && m.progress >= m.target && pageNum > optimisticEconomy.currentPage
+        })
+    }, [optimisticEconomy.missions, optimisticEconomy.currentPage])
+
+    const hasClaimableOnPrevPages = useMemo(() => {
+        return optimisticEconomy.missions.some((m, index) => {
+            const pageNum = Math.floor(index / MISSIONS_PER_PAGE) + 1
+            return !m.claimed && m.progress >= m.target && pageNum < optimisticEconomy.currentPage
+        })
+    }, [optimisticEconomy.missions, optimisticEconomy.currentPage])
 
     return {
-        economy,
+        economy: optimisticEconomy,
+        remainingCredits,
         dispatch,
         claimMission,
         totalPages,
         currentMissionsPage,
+        totalClaimableCount,
+        hasClaimableOnNextPages,
+        hasClaimableOnPrevPages,
     }
 }

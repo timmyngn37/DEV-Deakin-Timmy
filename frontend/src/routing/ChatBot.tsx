@@ -2,15 +2,15 @@
  * ChatBot.tsx
  * ------------------------------------------------------------------
  * This file contains the main React component for the DEV@Deakin AI Assistant chatbot interface.
- * It implements a terminal-style chat interface with features such as:
- * - Domain-bounded AI responses (Author, Platform, Deakin University)
- * - Daily missions and credit economy system
- * - Flagging and escalation of unhelpful or inaccurate responses
- * - Responsive layout with sidebar for missions and rewards
+ * Implements a terminal-style chat interface featuring:
+ * - Domain-bounded AI responses
+ * - Optimistic sending status & skeleton loading fallback
+ * - Multi-session chat threads
+ * - Paginated Daily Missions with subtle completed mission indicators
  * ------------------------------------------------------------------
  */
 
-import { useState, type ReactNode } from 'react'
+import { useState, type ReactNode, type UIEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../customHooks/AuthContext'
 import { useEconomy } from '../customHooks/useEconomy'
@@ -24,15 +24,31 @@ function ChatBot() {
 
     const [isSidebarOpen, setIsSidebarOpen] = useState(true)
 
-    const { economy, dispatch, claimMission, totalPages, currentMissionsPage } = useEconomy(token, isPaid)
+    const {
+        economy,
+        dispatch,
+        claimMission,
+        totalPages,
+        currentMissionsPage,
+        totalClaimableCount,
+        hasClaimableOnNextPages,
+        hasClaimableOnPrevPages,
+    } = useEconomy(token, isPaid)
 
     const {
+        sessions,
+        activeSessionId,
+        setActiveSessionId,
+        handleCreateNewSession,
+        handleDeleteSession,
         inputText,
         setInputText,
         isPending,
         optimisticMessages,
+        loadOlderHistory,
+        hasMoreHistory,
+        isLoadingHistory,
         handleSendMessage,
-        handleClearChat,
         flagModalTarget,
         setFlagModalTarget,
         flagReason,
@@ -48,6 +64,12 @@ function ChatBot() {
     const handleCopy = (text: string) => {
         navigator.clipboard.writeText(text)
         alert('Copied message to clipboard!')
+    }
+
+    const handleScrollTop = (e: UIEvent<HTMLDivElement>) => {
+        if (e.currentTarget.scrollTop === 0 && hasMoreHistory && !isLoadingHistory) {
+            loadOlderHistory()
+        }
     }
 
     const showToast = (msg: string) => {
@@ -88,11 +110,29 @@ function ChatBot() {
 
                 <button
                     type="button"
-                    className="missions-toggle-btn"
+                    className={`missions-toggle-btn ${totalClaimableCount > 0 ? 'pulse-glow' : ''}`}
                     onClick={() => setIsSidebarOpen((prev) => !prev)}
+                    style={{
+                        position: 'relative',
+                        boxShadow: totalClaimableCount > 0 ? '0 0 12px rgba(52, 211, 153, 0.5)' : 'none',
+                        borderColor: totalClaimableCount > 0 ? '#34d399' : 'initial',
+                    }}
                 >
                     <span>🎯</span>
                     <span>{isSidebarOpen ? 'Hide Daily Missions' : 'Daily Missions & Rewards'}</span>
+                    {totalClaimableCount > 0 && (
+                        <span style={{
+                            marginLeft: '0.4rem',
+                            padding: '0.1rem 0.4rem',
+                            borderRadius: '9999px',
+                            background: '#10b981',
+                            color: '#fff',
+                            fontSize: '0.7rem',
+                            fontWeight: 700,
+                        }}>
+                            {totalClaimableCount} Ready!
+                        </span>
+                    )}
                 </button>
             </div>
 
@@ -120,6 +160,50 @@ function ChatBot() {
                 </div>
             )}
 
+            {/* Chat Sessions Selector Bar */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', overflowX: 'auto', paddingBottom: '0.5rem' }}>
+                <button
+                    type="button"
+                    className="terminal-btn"
+                    style={{ background: '#3b82f6', color: '#fff', border: 'none' }}
+                    onClick={handleCreateNewSession}
+                >
+                    + New Chat
+                </button>
+
+                {sessions.map((sess) => (
+                    <div
+                        key={sess.id}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.25rem',
+                            padding: '0.35rem 0.75rem',
+                            borderRadius: '0.375rem',
+                            background: activeSessionId === sess.id ? '#2d3748' : '#1a202c',
+                            border: activeSessionId === sess.id ? '1px solid #4a5568' : '1px solid transparent',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem',
+                            color: activeSessionId === sess.id ? '#fff' : '#a0aec0',
+                            whiteSpace: 'nowrap',
+                        }}
+                        onClick={() => setActiveSessionId(sess.id)}
+                    >
+                        <span>💬 {sess.title}</span>
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                handleDeleteSession(sess.id)
+                            }}
+                            style={{ background: 'transparent', border: 'none', color: '#ef4444', marginLeft: '0.25rem', cursor: 'pointer' }}
+                        >
+                            ✕
+                        </button>
+                    </div>
+                ))}
+            </div>
+
             <div className={`chatbot-main-grid ${isSidebarOpen ? 'with-sidebar' : ''}`}>
                 <div className="chatbot-terminal">
                     <div className="terminal-header">
@@ -129,18 +213,15 @@ function ChatBot() {
                             <span className="dot dot-green"></span>
                             <span className="terminal-window-title ml-2">assistant@dev-deakin:~</span>
                         </div>
-                        <div className="terminal-actions">
-                            <button
-                                type="button"
-                                className="terminal-btn"
-                                onClick={handleClearChat}
-                            >
-                                Clear Chat
-                            </button>
-                        </div>
                     </div>
 
-                    <div className="chat-messages-container">
+                    <div className="chat-messages-container" onScroll={handleScrollTop}>
+                        {isLoadingHistory && (
+                            <div style={{ textAlign: 'center', padding: '0.5rem', fontSize: '0.75rem', color: '#888' }}>
+                                Loading older messages...
+                            </div>
+                        )}
+
                         <div className="chatbot-welcome-card">
                             <div className="welcome-title">
                                 <span>🤖</span>
@@ -158,6 +239,11 @@ function ChatBot() {
                                     <span>{msg.role === 'user' ? 'You' : 'DEV@Deakin Assistant'}</span>
                                     <span>•</span>
                                     <span>{msg.timestamp}</span>
+                                    {msg.status === 'pending' && (
+                                        <span style={{ marginLeft: '0.5rem', color: '#3b82f6', fontSize: '0.75rem' }}>
+                                            ⏳ Sending...
+                                        </span>
+                                    )}
                                 </div>
 
                                 <div className="message-bubble">
@@ -235,6 +321,20 @@ function ChatBot() {
                                 </div>
                             </div>
                         ))}
+
+                        {/* Skeleton Loading State for Pending AI RAG Response */}
+                        {isPending && (
+                            <div className="message-row assistant pending-skeleton">
+                                <div className="message-meta">
+                                    <span>DEV@Deakin Assistant</span>
+                                    <span>•</span>
+                                    <span style={{ color: '#3b82f6' }}>Thinking...</span>
+                                </div>
+                                <div className="message-bubble" style={{ opacity: 0.7, fontStyle: 'italic' }}>
+                                    <span>🤖 Processing corpus embeddings & generating answer...</span>
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     <div className="chatbot-input-container">
@@ -338,22 +438,37 @@ function ChatBot() {
                         </div>
 
                         {totalPages > 1 && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.5rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.75rem', paddingTop: '0.5rem', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
                                 <button
                                     type="button"
                                     className="terminal-btn"
                                     disabled={economy.currentPage === 1}
                                     onClick={() => dispatch({ type: 'SET_MISSION_PAGE', payload: economy.currentPage - 1 })}
+                                    style={{
+                                        position: 'relative',
+                                        boxShadow: hasClaimableOnPrevPages ? '0 0 8px rgba(52, 211, 153, 0.6)' : 'none',
+                                        borderColor: hasClaimableOnPrevPages ? '#34d399' : 'initial',
+                                        color: hasClaimableOnPrevPages ? '#34d399' : 'inherit',
+                                    }}
                                 >
-                                    ← Previous
+                                    ← {hasClaimableOnPrevPages ? 'Previous (⚡ Ready!)' : 'Previous'}
                                 </button>
+                                <span style={{ fontSize: '0.75rem', color: '#a0aec0' }}>
+                                    Page {economy.currentPage} / {totalPages}
+                                </span>
                                 <button
                                     type="button"
                                     className="terminal-btn"
                                     disabled={economy.currentPage === totalPages}
                                     onClick={() => dispatch({ type: 'SET_MISSION_PAGE', payload: economy.currentPage + 1 })}
+                                    style={{
+                                        position: 'relative',
+                                        boxShadow: hasClaimableOnNextPages ? '0 0 8px rgba(52, 211, 153, 0.6)' : 'none',
+                                        borderColor: hasClaimableOnNextPages ? '#34d399' : 'initial',
+                                        color: hasClaimableOnNextPages ? '#34d399' : 'inherit',
+                                    }}
                                 >
-                                    Next →
+                                    {hasClaimableOnNextPages ? 'Next (⚡ Ready!)' : 'Next'} →
                                 </button>
                             </div>
                         )}

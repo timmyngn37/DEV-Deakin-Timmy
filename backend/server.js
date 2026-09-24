@@ -5,7 +5,7 @@
  *   1. Auth            - /register, /login, /upgrade (JWT-based, backed by Firestore)
  *   2. Newsletter      - /subscribe (SendGrid transactional email)
  *   3. Posts           - /posts (GET, POST with role/plan enforcement)
- *   4. RAG & AI Chat   - /chat, /chat/history (GET & DELETE), /chat/flag
+ *   4. RAG & AI Chat   - /chat, /chat/sessions, /chat/history (GET & DELETE), /chat/flag
  *   5. Economy & Admin - /user/credits-missions, /missions/claim, /admin/ingest-pdf
  * ------------------------------------------------------------------
  */
@@ -238,13 +238,83 @@ app.post('/login', authLimiter, async (req, res) => {
 });
 
 // ========================================================================
-// RAG CHATBOT & FLAGGING ROUTES
+// RAG CHATBOT, SESSIONS & FLAGGING ROUTES
 // ========================================================================
+
+app.get('/chat/sessions', authenticateToken, async (req, res) => {
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
+
+    try {
+        const snapshot = await db
+            .collection('users')
+            .doc(req.user.uid)
+            .collection('chatSessions')
+            .orderBy('updatedAt', 'desc')
+            .get();
+
+        const sessions = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        res.status(200).json({ sessions });
+    } catch (error) {
+        console.error('Error fetching chat sessions:', error);
+        res.status(500).json({ message: 'Unable to fetch chat sessions.' });
+    }
+});
+
+app.post('/chat/sessions', authenticateToken, async (req, res) => {
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
+
+    try {
+        const now = new Date().toISOString();
+        const sessionRef = await db
+            .collection('users')
+            .doc(req.user.uid)
+            .collection('chatSessions')
+            .add({
+                title: req.body.title || 'New Conversation',
+                createdAt: now,
+                updatedAt: now,
+            });
+
+        res.status(201).json({ id: sessionRef.id, title: 'New Conversation', createdAt: now, updatedAt: now });
+    } catch (error) {
+        console.error('Error creating chat session:', error);
+        res.status(500).json({ message: 'Failed to create new chat session.' });
+    }
+});
+
+app.delete('/chat/sessions/:sessionId', authenticateToken, async (req, res) => {
+    if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
+
+    const { sessionId } = req.params;
+
+    try {
+        const sessionRef = db
+            .collection('users')
+            .doc(req.user.uid)
+            .collection('chatSessions')
+            .doc(sessionId);
+
+        // Delete subcollection chatMessages
+        const messagesRef = sessionRef.collection('chatMessages');
+        const snapshot = await messagesRef.get();
+        const batch = db.batch();
+        snapshot.docs.forEach((doc) => batch.delete(doc.ref));
+        batch.delete(sessionRef);
+        await batch.commit();
+
+        res.status(200).json({ message: 'Session deleted successfully.' });
+    } catch (error) {
+        console.error('Error deleting session:', error);
+        res.status(500).json({ message: 'Failed to delete chat session.' });
+    }
+});
 
 app.post('/chat', authenticateToken, async (req, res) => {
     if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
     const message = typeof req.body.message === 'string' ? req.body.message.trim() : '';
+    let sessionId = req.body.sessionId;
+
     if (!message) return res.status(400).json({ message: 'Chat message is required.' });
     if (message.length > 2000) return res.status(400).json({ message: 'Chat message is too long.' });
 
@@ -264,6 +334,28 @@ app.post('/chat', authenticateToken, async (req, res) => {
 
         if (!googleApiKey) {
             return res.status(500).json({ message: 'Google Generative AI API key is missing from server configuration.' });
+        }
+
+        // Auto-create session if none provided
+        const sessionsRef = userRef.collection('chatSessions');
+        if (!sessionId) {
+            const newSession = await sessionsRef.add({
+                title: message.length > 30 ? `${message.substring(0, 30)}...` : message,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            });
+            sessionId = newSession.id;
+        } else {
+            // Update session title on first message if needed
+            const sessDoc = await sessionsRef.doc(sessionId).get();
+            if (sessDoc.exists && sessDoc.data().title === 'New Conversation') {
+                await sessionsRef.doc(sessionId).update({
+                    title: message.length > 30 ? `${message.substring(0, 30)}...` : message,
+                    updatedAt: new Date().toISOString(),
+                });
+            } else {
+                await sessionsRef.doc(sessionId).update({ updatedAt: new Date().toISOString() });
+            }
         }
 
         const { generateText } = await import('ai');
@@ -339,15 +431,15 @@ app.post('/chat', authenticateToken, async (req, res) => {
         const createdAt = new Date().toISOString();
         const chatTurn = { userMessage: message, assistantMessage, createdAt };
 
-        const turnRef = await db
-            .collection('users')
-            .doc(req.user.uid)
+        const turnRef = await sessionsRef
+            .doc(sessionId)
             .collection('chatMessages')
             .add(chatTurn);
 
         res.status(200).json({
             message: assistantMessage,
             chatId: turnRef.id,
+            sessionId,
             createdAt,
             domain: detectedDomain,
             confidence: isRefusal ? 0 : Math.round(Number(retrievedChunks[0]?.similarity || 0.85) * 100),
@@ -417,23 +509,35 @@ app.post('/chat/flag', authenticateToken, async (req, res) => {
     }
 });
 
+// HD1 Spec Requirement: Paginated chat history per session (20 messages per page)
 app.get('/chat/history', authenticateToken, async (req, res) => {
     if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
+
+    const sessionId = req.query.sessionId;
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
+
+    if (!sessionId) {
+        return res.status(200).json({ history: [], page: 1, limit: 20, hasMore: false });
+    }
 
     try {
         const snapshot = await db
             .collection('users')
             .doc(req.user.uid)
+            .collection('chatSessions')
+            .doc(sessionId)
             .collection('chatMessages')
             .orderBy('createdAt', 'desc')
-            .limit(50)
+            .limit(limit)
+            .offset((page - 1) * limit)
             .get();
 
         const history = snapshot.docs
             .map((doc) => ({ id: doc.id, ...doc.data() }))
             .reverse();
 
-        res.status(200).json({ history });
+        res.status(200).json({ history, page, limit, hasMore: snapshot.docs.length === limit });
     } catch (error) {
         console.error('Error fetching chat history:', error);
         res.status(500).json({ message: 'Unable to load chat history.' });
@@ -443,17 +547,20 @@ app.get('/chat/history', authenticateToken, async (req, res) => {
 app.delete('/chat/history', authenticateToken, async (req, res) => {
     if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
+    const sessionId = req.query.sessionId;
+    if (!sessionId) return res.status(400).json({ message: 'Session ID is required.' });
+
     try {
         const messagesRef = db
             .collection('users')
             .doc(req.user.uid)
+            .collection('chatSessions')
+            .doc(sessionId)
             .collection('chatMessages');
 
         const snapshot = await messagesRef.get();
         const batch = db.batch();
-        snapshot.docs.forEach((doc) => {
-            batch.delete(doc.ref);
-        });
+        snapshot.docs.forEach((doc) => batch.delete(doc.ref));
         await batch.commit();
 
         return res.status(200).json({ message: 'Chat history cleared successfully.' });

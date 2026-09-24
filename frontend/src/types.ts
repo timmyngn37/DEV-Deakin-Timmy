@@ -125,6 +125,13 @@ export interface IPaymentDetails {
 export type MessageDomain = 'author' | 'platform' | 'deakin' | 'out_of_scope' | 'unit_syllabus'
 export type FlagReason = 'unhelpful' | 'inaccurate' | 'out_of_scope' | 'needs_human'
 
+export interface IChatSession {
+    id: string
+    title: string
+    createdAt: string
+    updatedAt: string
+}
+
 export interface IDisplayMessage {
     id: string
     role: 'user' | 'assistant' | 'system'
@@ -135,6 +142,7 @@ export interface IDisplayMessage {
     isFlagged?: boolean
     flagReason?: FlagReason
     isRefusal?: boolean
+    status?: 'pending' | 'sent' | 'failed'
 }
 
 export interface IFlagPayload {
