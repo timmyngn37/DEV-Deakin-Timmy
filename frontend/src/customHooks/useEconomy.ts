@@ -1,3 +1,10 @@
+/**
+ * useEconomy.ts
+ * ------------------------------------------------------------------
+ * Provides functions to claim missions, update credits, and handle mission progress.
+ * ------------------------------------------------------------------
+ */
+
 import { useEffect, useReducer, useMemo, useOptimistic, useTransition } from 'react'
 import type { IMissionItem, IEconomyData } from '../types'
 

@@ -249,7 +249,7 @@ app.get('/chat/sessions', authenticateToken, async (req, res) => {
             .collection('users')
             .doc(req.user.uid)
             .collection('chatSessions')
-            .orderBy('updatedAt', 'desc')
+            .orderBy('createdAt', 'asc')
             .get();
 
         const sessions = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
@@ -264,18 +264,19 @@ app.post('/chat/sessions', authenticateToken, async (req, res) => {
     if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 
     try {
+        const sessionsRef = db.collection('users').doc(req.user.uid).collection('chatSessions');
+        const snapshot = await sessionsRef.get();
+        const nextNum = snapshot.size + 1;
+        const title = `Chat ${nextNum}`;
         const now = new Date().toISOString();
-        const sessionRef = await db
-            .collection('users')
-            .doc(req.user.uid)
-            .collection('chatSessions')
-            .add({
-                title: req.body.title || 'New Conversation',
-                createdAt: now,
-                updatedAt: now,
-            });
 
-        res.status(201).json({ id: sessionRef.id, title: 'New Conversation', createdAt: now, updatedAt: now });
+        const sessionRef = await sessionsRef.add({
+            title,
+            createdAt: now,
+            updatedAt: now,
+        });
+
+        res.status(201).json({ id: sessionRef.id, title, createdAt: now, updatedAt: now });
     } catch (error) {
         console.error('Error creating chat session:', error);
         res.status(500).json({ message: 'Failed to create new chat session.' });
@@ -294,7 +295,6 @@ app.delete('/chat/sessions/:sessionId', authenticateToken, async (req, res) => {
             .collection('chatSessions')
             .doc(sessionId);
 
-        // Delete subcollection chatMessages
         const messagesRef = sessionRef.collection('chatMessages');
         const snapshot = await messagesRef.get();
         const batch = db.batch();
@@ -336,26 +336,19 @@ app.post('/chat', authenticateToken, async (req, res) => {
             return res.status(500).json({ message: 'Google Generative AI API key is missing from server configuration.' });
         }
 
-        // Auto-create session if none provided
         const sessionsRef = userRef.collection('chatSessions');
         if (!sessionId) {
+            const snapshot = await sessionsRef.get();
+            const nextNum = snapshot.size + 1;
+            const title = `Chat ${nextNum}`;
             const newSession = await sessionsRef.add({
-                title: message.length > 30 ? `${message.substring(0, 30)}...` : message,
+                title,
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
             });
             sessionId = newSession.id;
         } else {
-            // Update session title on first message if needed
-            const sessDoc = await sessionsRef.doc(sessionId).get();
-            if (sessDoc.exists && sessDoc.data().title === 'New Conversation') {
-                await sessionsRef.doc(sessionId).update({
-                    title: message.length > 30 ? `${message.substring(0, 30)}...` : message,
-                    updatedAt: new Date().toISOString(),
-                });
-            } else {
-                await sessionsRef.doc(sessionId).update({ updatedAt: new Date().toISOString() });
-            }
+            await sessionsRef.doc(sessionId).update({ updatedAt: new Date().toISOString() });
         }
 
         const { generateText } = await import('ai');
@@ -509,7 +502,6 @@ app.post('/chat/flag', authenticateToken, async (req, res) => {
     }
 });
 
-// HD1 Spec Requirement: Paginated chat history per session (20 messages per page)
 app.get('/chat/history', authenticateToken, async (req, res) => {
     if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
 

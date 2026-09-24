@@ -1,5 +1,5 @@
 /**
- * src/hooks/useChat.ts
+ * useChat.ts
  * ------------------------------------------------------------------
  * Encapsulates chat state management, multi-session threads, message
  * sending, and flagging functionality integrated with credit economy.
@@ -11,10 +11,13 @@ import type { IDisplayMessage, IChatSession, FlagReason } from '../types'
 import type { EconomyAction } from './useEconomy'
 
 const HISTORY_PAGE_SIZE = 20
+const ACTIVE_SESSION_STORAGE_KEY = 'dev_deakin_active_session_id'
 
 export function useChat(token: string | null, credits: number, dispatchEconomy: Dispatch<EconomyAction>) {
     const [sessions, setSessions] = useState<IChatSession[]>([])
-    const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+    const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
+        return localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY) || null
+    })
     const [messages, setMessages] = useState<IDisplayMessage[]>([])
     const [inputText, setInputText] = useState('')
     const [isPending, startTransition] = useTransition()
@@ -43,6 +46,15 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
         }
     )
 
+    // Sync active session selection to localStorage
+    useEffect(() => {
+        if (activeSessionId) {
+            localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, activeSessionId)
+        } else {
+            localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
+        }
+    }, [activeSessionId])
+
     // Fetch User's Chat Sessions
     useEffect(() => {
         if (!token) return
@@ -57,8 +69,17 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                     const data = await res.json()
                     if (isMounted && Array.isArray(data.sessions)) {
                         setSessions(data.sessions)
-                        if (data.sessions.length > 0 && !activeSessionId) {
+
+                        // Preserve stored active session if it exists, otherwise default to first available
+                        const storedId = localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
+                        const existsInFetched = data.sessions.some((s: IChatSession) => s.id === storedId)
+
+                        if (storedId && existsInFetched) {
+                            setActiveSessionId(storedId)
+                        } else if (data.sessions.length > 0) {
                             setActiveSessionId(data.sessions[0].id)
+                        } else {
+                            setActiveSessionId(null)
                         }
                     }
                 }
@@ -126,11 +147,11 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                     'Content-Type': 'application/json',
                     Authorization: `Bearer ${token}`,
                 },
-                body: JSON.stringify({ title: 'New Conversation' }),
+                body: JSON.stringify({}),
             })
             if (res.ok) {
                 const newSess = await res.json()
-                setSessions((prev) => [newSess, ...prev])
+                setSessions((prev) => [...prev, newSess])
                 setActiveSessionId(newSess.id)
                 setMessages([])
             }
@@ -152,7 +173,8 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                 const updated = sessions.filter((s) => s.id !== sessionIdToDelete)
                 setSessions(updated)
                 if (activeSessionId === sessionIdToDelete) {
-                    setActiveSessionId(updated.length > 0 ? updated[0].id : null)
+                    const nextSessionId = updated.length > 0 ? updated[updated.length - 1].id : null
+                    setActiveSessionId(nextSessionId)
                 }
             }
         } catch (err) {
@@ -246,7 +268,8 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
 
                 if (!activeSessionId && data.sessionId) {
                     setActiveSessionId(data.sessionId)
-                    setSessions((prev) => [{ id: data.sessionId, title: text, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, ...prev])
+                    const nextChatNum = sessions.length + 1
+                    setSessions((prev) => [...prev, { id: data.sessionId, title: `Chat ${nextChatNum}`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }])
                 }
 
                 const confirmedUserMsg: IDisplayMessage = { ...userMsg, status: 'sent' }
