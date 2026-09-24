@@ -1,5 +1,13 @@
+/**
+ * App.tsx
+ * ------------------------------------------------------------------
+ * Top-level application router for DEV@Deakin. Defines application routes,
+ * route guards, lazy-loaded components, and skeleton fallback UI.
+ * ------------------------------------------------------------------
+ */
+
 import './styles/App.css'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, lazy, Suspense, type ReactNode } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { onAuthStateChanged, type User } from 'firebase/auth'
 import About from './routing/About'
@@ -13,38 +21,42 @@ import BrowsePosts from './routing/BrowsePosts'
 import Login from './routing/Login'
 import Signup from './routing/Signup'
 import Pricing from './routing/Pricing'
-import ChatBot from './routing/ChatBot'
 import { auth } from './utils/firebase'
+
+/**
+ * Lazy-loaded ChatBot module
+ * Code-splits the AI Assistant bundle so it is only fetched when navigating to /chatbot
+ */
+const ChatBot = lazy(() => import('./routing/ChatBot'))
 
 /**
  * PublicOnly
  * ------------------------------------------------------------------
  * Route guard for pages that should ONLY be visible to logged-out
  * visitors. If a user is already authenticated,
- * they're redirected to the homepage instead of seeing these forms again.
+ * they are redirected to the homepage instead of seeing auth forms again.
  * ------------------------------------------------------------------
  */
 function PublicOnly({ children }: Readonly<{ children: ReactNode }>) {
   const [user, setUser] = useState<User | null>(null)
-  const [loading, setLoading] = useState(true) // avoids a flash of the form before auth state resolves
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // If Firebase failed to initialize (e.g. missing config), `auth`
-    // will be falsy - treat that as "not logged in" rather than crashing.
+    // Treat missing Firebase initialization as logged-out state
     if (!auth) {
       setLoading(false)
       return
     }
-    // onAuthStateChanged returns an unsubscribe function, which React
-    // calls automatically on unmount when returned directly from useEffect.
+
+    // Subscribe to Firebase auth state changes
     return onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser)
       setLoading(false)
     })
   }, [])
 
-  if (loading) return null          // render nothing while we determine auth state
-  if (user) return <Navigate to="/" replace /> // logged-in users get bounced to home
+  if (loading) return null
+  if (user) return <Navigate to="/" replace />
 
   return children
 }
@@ -52,9 +64,8 @@ function PublicOnly({ children }: Readonly<{ children: ReactNode }>) {
 /**
  * Home
  * ------------------------------------------------------------------
- * Composes the sections that make up the single-page homepage layout.
- * Each section is its own self-contained component (data + markup),
- * so Home itself stays purely about ordering.
+ * Composes the single-page homepage layout. Contains about, milestones,
+ * project showcases, gallery, articles, and tutorial sections.
  * ------------------------------------------------------------------
  */
 function Home() {
@@ -71,11 +82,25 @@ function Home() {
 }
 
 /**
+ * ChatBotFallback
+ * ------------------------------------------------------------------
+ * Suspense fallback skeleton UI rendered while the lazy-loaded 
+ * ChatBot component bundle is being fetched over the network.
+ * ------------------------------------------------------------------
+ */
+function ChatBotFallback() {
+  return (
+    <div className="flex flex-col items-center justify-center h-screen">
+        Loading DEV@Deakin AI Assistant...
+    </div>
+  )
+}
+
+/**
  * App
  * ------------------------------------------------------------------
- * Top-level route table. Header/Footer/AuthProvider/BrowserRouter are
- * mounted once in main.tsx around this component, so App only needs
- * to define which page renders for which path.
+ * Main application entry component defining route targets and pathing.
+ * Uses Suspense boundaries for async components.
  * ------------------------------------------------------------------
  */
 function App() {
@@ -84,11 +109,19 @@ function App() {
       <Route path="/" element={<Home />} />
       <Route path="/post" element={<Post />} />
       <Route path="/browse-posts" element={<BrowsePosts />} />
-      {/* Login/Signup are wrapped in PublicOnly so an already-logged-in user can't revisit them */}
+      {/* Auth routes protected from logged-in users */}
       <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
       <Route path="/signup" element={<PublicOnly><Signup /></PublicOnly>} />
       <Route path="/pricing" element={<Pricing />} />
-      <Route path="/chatbot" element={<ChatBot />} />
+      {/* Lazy-loaded assistant route wrapped in Suspense */}
+      <Route
+        path="/chatbot"
+        element={
+          <Suspense fallback={<ChatBotFallback />}>
+            <ChatBot />
+          </Suspense>
+        }
+      />
     </Routes>
   )
 }
