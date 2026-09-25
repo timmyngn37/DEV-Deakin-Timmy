@@ -75,7 +75,7 @@ const authLimiter = rateLimit({
     legacyHeaders: false,
 });
 
-// DEFAULT MISSIONS (4 total - m5 removed)
+// DEFAULT MISSIONS
 const DEFAULT_MISSIONS = [
     { id: 'm1', title: 'Daily Check-in', description: 'Log into DEV@Deakin to claim your daily bonus.', reward: 2, progress: 0, target: 1, claimed: false },
     { id: 'm2', title: 'Knowledge Seeker', description: 'Ask 2 questions about Timmy or DEV@Deakin platform.', reward: 2, progress: 0, target: 2, claimed: false },
@@ -186,6 +186,13 @@ app.post('/register', authLimiter, async (req, res) => {
         const passwordHash = await bcrypt.hash(password, 10);
         const todayStr = new Date().toISOString().split('T')[0];
 
+        // Ensure new accounts get m1 auto-completed on registration day
+        const initialMissions = DEFAULT_MISSIONS.map((m) => ({
+            ...m,
+            progress: m.id === 'm1' ? 1 : 0,
+            claimed: false,
+        }));
+
         await usersRef.add({
             name: name.trim(),
             email: email.toLowerCase(),
@@ -194,7 +201,7 @@ app.post('/register', authLimiter, async (req, res) => {
             credits: 5,
             streakDays: 1,
             lastLoginDate: todayStr,
-            dailyMissions: DEFAULT_MISSIONS,
+            dailyMissions: initialMissions,
             createdAt: new Date().toISOString(),
         });
 

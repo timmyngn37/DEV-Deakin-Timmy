@@ -118,6 +118,11 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
         }
         let isMounted = true
 
+        // Xóa tin nhắn cũ ngay lập tức để tránh hiện "bóng ma" tin nhắn của session trước
+        setMessages([])
+        setHistoryPage(1)
+        setHasMoreHistory(true)
+
         async function fetchInitialHistory() {
             try {
                 const res = await fetch(`http://localhost:3000/chat/history?sessionId=${activeSessionId}&page=1&limit=${HISTORY_PAGE_SIZE}`, {
@@ -324,7 +329,7 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                         type: 'SET_INITIAL_DATA',
                         payload: {
                             credits: data.remainingCredits ?? (credits - 1),
-                            streakDays: 1,
+                            streakDays: data.streakDays ?? 1, // Sửa bug: Ưu tiên lấy streakDays từ backend nếu có
                             missions: data.missions,
                         },
                     })
@@ -383,8 +388,8 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                     dispatchEconomy({
                         type: 'SET_INITIAL_DATA',
                         payload: {
-                            credits: (credits + 3),
-                            streakDays: 1,
+                            credits: data.remainingCredits ?? (credits + 3), // Sửa: Ưu tiên credits từ server
+                            streakDays: data.streakDays ?? 1, // Sửa bug: Không tự ý reset streak về 1
                             missions: data.missions,
                         },
                     })

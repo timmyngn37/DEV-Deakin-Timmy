@@ -28,19 +28,26 @@ export type EconomyAction =
     | { type: 'SET_INITIAL_DATA'; payload: { credits: number; streakDays: number; missions: IMissionItem[] } }
     | { type: 'DEDUCT_CREDIT'; payload: number }
     | { type: 'ADD_CREDITS'; payload: number }
-    | { type: 'CLAIM_MISSION'; payload: { missionId: string; reward: number } }
+    | { type: 'CLAIM_MISSION'; payload: { missionId: string; reward: number; newCredits?: number } }
     | { type: 'INCREMENT_MISSION_PROGRESS'; payload: { missionId: string } }
     | { type: 'SET_MISSION_PAGE'; payload: number }
 
 function economyReducer(state: EconomyState, action: EconomyAction): EconomyState {
     switch (action.type) {
-        case 'SET_INITIAL_DATA':
+        case 'SET_INITIAL_DATA': {
+            const serverMissions = action.payload.missions || []
+            const mergedMissions = INITIAL_MISSIONS.map((initM) => {
+                const found = serverMissions.find((m) => m.id === initM.id)
+                return found ? { ...initM, ...found } : initM
+            })
+
             return {
                 ...state,
                 credits: action.payload.credits,
                 streakDays: action.payload.streakDays,
-                missions: action.payload.missions?.length ? action.payload.missions : state.missions,
+                missions: mergedMissions,
             }
+        }
         case 'DEDUCT_CREDIT':
             return { ...state, credits: Math.max(0, state.credits - action.payload) }
         case 'ADD_CREDITS':
@@ -48,7 +55,7 @@ function economyReducer(state: EconomyState, action: EconomyAction): EconomyStat
         case 'CLAIM_MISSION':
             return {
                 ...state,
-                credits: state.credits + action.payload.reward,
+                credits: action.payload.newCredits !== undefined ? action.payload.newCredits : state.credits + action.payload.reward,
                 missions: state.missions.map((m) =>
                     m.id === action.payload.missionId ? { ...m, claimed: true } : m
                 ),
@@ -161,7 +168,14 @@ export function useEconomy(token: string | null, isPaid: boolean) {
                 const data = await response.json()
 
                 if (response.ok) {
-                    dispatch({ type: 'CLAIM_MISSION', payload: { missionId: id, reward: target.reward } })
+                    dispatch({ 
+                        type: 'CLAIM_MISSION', 
+                        payload: { 
+                            missionId: id, 
+                            reward: target.reward,
+                            newCredits: data.credits ?? data.remainingCredits
+                        } 
+                    })
                     onSuccessToast(`Claimed +${target.reward} credits!`)
                 } else {
                     alert(data.message || 'Unable to claim reward.')
