@@ -329,6 +329,8 @@ app.post('/login', authLimiter, async (req, res) => {
         const todayStr = new Date().toISOString().split('T')[0];
         const lastLoginDate = user.lastLoginDate || null;
 
+        const plan = user.plan === 'paid' ? 'paid' : 'free';
+
         let streakDays = user.streakDays ?? 1;
         let missions = user.dailyMissions || DEFAULT_MISSIONS;
 
@@ -364,7 +366,6 @@ app.post('/login', authLimiter, async (req, res) => {
             });
         }
 
-        const plan = user.plan === 'paid' ? 'paid' : 'free';
         const token = jwt.sign(
             { uid: userDoc.id, email: user.email, name: user.name, plan },
             jwtSecret,
@@ -487,8 +488,9 @@ app.delete('/chat/sessions/:sessionId', authenticateToken, async (req, res) => {
  * 1. Validate the message (non-empty, max 2000 chars).
  * 2. Check the user's credit balance - refuse if 0.
  * 3. Resolve or create a chat session.
- * 4. Retrieve the top relevant chunks from the vector store (RAG).
- * 5. Classify the query domain:
+ * 4. Apply the deterministic foreign-unit guard.
+ * 5. Retrieve the top relevant chunks from the vector store (RAG).
+ * 6. Classify the query domain:
  * - 'unit_syllabus' → SIT313-related content
  * - 'author' → Timmy Nguyen / author info
  * - 'platform' → DEV@Deakin features, posts, credits
@@ -542,22 +544,26 @@ app.post('/chat', authenticateToken, async (req, res) => {
             await sessionsRef.doc(sessionId).update({ updatedAt: new Date().toISOString() });
         }
 
-        // Retrieve semantically similar knowledge-base chunks via vector search
-        let retrievedChunks = [];
-        try {
-            retrievedChunks = await retrieveRelevantChunks(message);
-        } catch (error) {
-            console.error('RAG retrieval error:', error);
-            return res.status(503).json({ message: 'The knowledge base is temporarily unavailable. Please try again later.' });
-        }
-
         const lowerMessage = message.toLowerCase();
-        const topSimilarity = Number(retrievedChunks[0]?.similarity || 0);
 
         // Detect any 6-character unit code in the message (e.g. SIT313, COMP101)
         const unitMatch = lowerMessage.match(/\b([a-z]{3}\d{3})\b/i);
         const mentionedUnit = unitMatch ? unitMatch[1].toLowerCase() : null;
         const isForbiddenUnit = mentionedUnit && mentionedUnit !== 'sit313';
+
+        // Retrieve semantically similar knowledge-base chunks via vector search
+        let retrievedChunks = [];
+
+        if (!isForbiddenUnit) {
+            try {
+                retrievedChunks = await retrieveRelevantChunks(message);
+            } catch (error) {
+                console.error('RAG retrieval error:', error);
+                return res.status(503).json({ message: 'The knowledge base is temporarily unavailable. Please try again later.' });
+            }
+        }
+
+        const topSimilarity = Number(retrievedChunks[0]?.similarity || 0);
 
         // Refuse if an unsupported unit is mentioned, no chunks were retrieved,
         // or the top chunk falls below the 0.60 similarity confidence threshold
@@ -619,11 +625,13 @@ app.post('/chat', authenticateToken, async (req, res) => {
 
                 const statusCode = Number(error?.statusCode);
                 const providerMessage = typeof error?.message === 'string' ? error.message : 'Unknown Gemini error';
+
                 if (statusCode === 429 || providerMessage.includes('quota')) {
                     return res.status(429).json({
                         message: 'Gemini quota exceeded. Please wait for quota to reset or check billing limits.',
                     });
                 }
+
                 return res.status(502).json({
                     message: `Gemini could not generate a response: ${providerMessage}`,
                 });
@@ -632,15 +640,24 @@ app.post('/chat', authenticateToken, async (req, res) => {
 
         // Advance relevant mission progress counters based on the query domain
         let missions = (userData.dailyMissions || DEFAULT_MISSIONS).filter((m) => m.id !== 'm5');
+
         missions = missions.map((m) => {
             // m2: Knowledge Seeker - triggered by valid platform or author queries
             if (m.id === 'm2' && validResponse && (detectedDomain === 'platform' || detectedDomain === 'author')) {
-                return { ...m, progress: Math.min(m.target, (m.progress || 0) + 1) };
+                return {
+                    ...m,
+                    progress: Math.min(m.target, (m.progress || 0) + 1)
+                };
             }
+
             // m4: Unit Scholar - triggered by valid SIT313 syllabus queries only
             if (m.id === 'm4' && validResponse && detectedDomain === 'unit_syllabus') {
-                return { ...m, progress: Math.min(m.target, (m.progress || 0) + 1) };
+                return {
+                    ...m,
+                    progress: Math.min(m.target, (m.progress || 0) + 1)
+                };
             }
+
             return m;
         });
 
@@ -651,6 +668,7 @@ app.post('/chat', authenticateToken, async (req, res) => {
         });
 
         const createdAt = new Date().toISOString();
+
         const chatTurn = {
             userMessage: message,
             assistantMessage,
@@ -671,9 +689,12 @@ app.post('/chat', authenticateToken, async (req, res) => {
             sessionId,
             createdAt,
             domain: detectedDomain,
-            confidence: !validResponse ? 0 : Math.round((topSimilarity || 0.85) * 100),
+            confidence: !validResponse
+                ? 0
+                : Math.round((topSimilarity || 0.85) * 100),
             isRefusal: !validResponse,
             remainingCredits: currentCredits - 1,
+            streakDays: userData.streakDays ?? 1,
             missions,
         });
     } catch (error) {
@@ -693,7 +714,7 @@ app.post('/chat', authenticateToken, async (req, res) => {
  * - Writes a new document to the 'flaggedMessages' Firestore collection
  * with status 'pending_review'.
  * - Advances the m3 (Quality Sentinel) mission progress by 1.
- * - Awards the user +3 credits as a quality-control incentive.
+ * - Completes the m3 mission so the +3 credit reward can be claimed.
  */
 app.post('/chat/flag', authenticateToken, async (req, res) => {
     if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
@@ -704,6 +725,30 @@ app.post('/chat/flag', authenticateToken, async (req, res) => {
         if (!messageId || !flagReason) {
             return res.status(400).json({ message: 'Missing messageId or flagReason.' });
         }
+
+        const existingFlag = await db
+            .collection('flaggedMessages')
+            .where('userId', '==', req.user.uid)
+            .where('messageId', '==', messageId)
+            .limit(1)
+            .get();
+
+        if (!existingFlag.empty) {
+            return res.status(409).json({
+                message: 'This response has already been flagged.'
+            });
+        }
+
+        const userRef = db.collection('users').doc(req.user.uid);
+        const userDoc = await userRef.get();
+
+        if (!userDoc.exists) {
+            return res.status(404).json({
+                message: 'Account not found.'
+            });
+        }
+
+        const userData = userDoc.data();
 
         const flagData = {
             userId: req.user.uid,
@@ -718,32 +763,29 @@ app.post('/chat/flag', authenticateToken, async (req, res) => {
 
         const docRef = await db.collection('flaggedMessages').add(flagData);
 
-        // Reward the user: advance m3 progress and credit them +3
-        const userRef = db.collection('users').doc(req.user.uid);
-        const userDoc = await userRef.get();
-        let missions = DEFAULT_MISSIONS;
-        let updatedCredits = 5;
+        // Advance m3 progress so the mission reward becomes claimable
+        let missions = (userData.dailyMissions || DEFAULT_MISSIONS)
+            .filter((m) => m.id !== 'm5');
 
-        if (userDoc.exists) {
-            const userData = userDoc.data();
-            missions = (userData.dailyMissions || DEFAULT_MISSIONS).filter((m) => m.id !== 'm5');
+        missions = missions.map((m) => {
+            if (m.id === 'm3') {
+                return {
+                    ...m,
+                    progress: Math.min(m.target, (m.progress || 0) + 1),
+                };
+            }
 
-            missions = missions.map((m) => {
-                if (m.id === 'm3') return { ...m, progress: Math.min(m.target, (m.progress || 0) + 1) };
-                return m;
-            });
+            return m;
+        });
 
-            updatedCredits = (userData.credits ?? 5) + 3;
-            await userRef.update({
-                credits: updatedCredits,
-                dailyMissions: missions,
-            });
-        }
+        await userRef.update({
+            dailyMissions: missions,
+        });
 
         return res.status(200).json({
             message: 'Response flagged & escalated to Timmy Nguyen!',
             flagId: docRef.id,
-            rewardCredits: 3,
+            streakDays: userData.streakDays ?? 1,
             missions,
         });
     } catch (error) {
@@ -898,7 +940,13 @@ app.get('/user/credits-missions', authenticateToken, async (req, res) => {
             });
         }
 
-        return res.status(200).json({ credits, streakDays, plan, missions, lastLoginDate: todayStr });
+        return res.status(200).json({
+            credits,
+            streakDays,
+            plan,
+            missions,
+            lastLoginDate: todayStr
+        });
     } catch (error) {
         console.error('Error fetching credits and missions:', error);
         return res.status(500).json({ message: 'Unable to fetch credit economy data.' });
@@ -918,7 +966,7 @@ app.get('/user/credits-missions', authenticateToken, async (req, res) => {
  * - Mission progress must have reached the target count.
  *
  * On success, marks the mission as claimed, adds its reward to the user's
- * credit balance, and persists both changes atomically in Firestore.
+ * credit balance, and persists both changes in Firestore.
  */
 app.post('/missions/claim', authenticateToken, async (req, res) => {
     if (!db) return res.status(500).json({ message: 'Server database configuration is missing.' });
@@ -1007,7 +1055,7 @@ app.post('/upgrade', authenticateToken, async (req, res) => {
 });
 
 // ========================================================================
-// ADMIN INGESTION ROUTE
+// WIP: ADMIN INGESTION ROUTE
 // ========================================================================
 
 /**
@@ -1026,32 +1074,32 @@ app.post('/upgrade', authenticateToken, async (req, res) => {
  * Access is restricted to the hardcoded admin email. The text is embedded
  * via generateEmbedding() and stored with insertChunk() into the vector DB.
  */
-app.post('/admin/ingest-pdf', authenticateToken, upload.single('pdf'), async (req, res) => {
-    try {
-        if (req.user.email !== 'timmynguyen01062006@gmail.com') {
-            return res.status(403).json({ message: 'Admin access required for ingestion.' });
-        }
+// app.post('/admin/ingest-pdf', authenticateToken, upload.single('pdf'), async (req, res) => {
+//     try {
+//         if (req.user.email !== 'timmynguyen01062006@gmail.com') {
+//             return res.status(403).json({ message: 'Admin access required for ingestion.' });
+//         }
 
-        const textContent = req.body.textContent || (req.file ? req.file.buffer.toString('utf-8') : '');
+//         const textContent = req.body.textContent || (req.file ? req.file.buffer.toString('utf-8') : '');
 
-        if (!textContent || !textContent.trim()) {
-            return res.status(400).json({ message: 'Text content is required for ingestion.' });
-        }
+//         if (!textContent || !textContent.trim()) {
+//             return res.status(400).json({ message: 'Text content is required for ingestion.' });
+//         }
 
-        const targetDomain = req.body.domain || 'platform';
-        const embedding = await generateEmbedding(textContent);
+//         const targetDomain = req.body.domain || 'platform';
+//         const embedding = await generateEmbedding(textContent);
 
-        await insertChunk(textContent, embedding, targetDomain);
+//         await insertChunk(textContent, embedding, targetDomain);
 
-        return res.status(200).json({
-            message: 'Corpus chunk successfully ingested into Vector DB!',
-            domain: targetDomain,
-        });
-    } catch (error) {
-        console.error('Error during PDF corpus ingestion:', error);
-        return res.status(500).json({ message: 'Something went wrong during corpus ingestion.' });
-    }
-});
+//         return res.status(200).json({
+//             message: 'Corpus chunk successfully ingested into Vector DB!',
+//             domain: targetDomain,
+//         });
+//     } catch (error) {
+//         console.error('Error during PDF corpus ingestion:', error);
+//         return res.status(500).json({ message: 'Something went wrong during corpus ingestion.' });
+//     }
+// });
 
 // ========================================================================
 // POSTS ROUTES
