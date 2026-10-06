@@ -168,13 +168,13 @@ export function useEconomy(token: string | null, isPaid: boolean) {
                 const data = await response.json()
 
                 if (response.ok) {
-                    dispatch({ 
-                        type: 'CLAIM_MISSION', 
-                        payload: { 
-                            missionId: id, 
-                            reward: target.reward,
-                            newCredits: data.credits ?? data.remainingCredits
-                        } 
+                    dispatch({
+                        type: 'SET_INITIAL_DATA',
+                        payload: {
+                            credits: data.credits,
+                            streakDays: economy.streakDays,
+                            missions: data.missions,
+                        },
                     })
                     onSuccessToast(`Claimed +${target.reward} credits!`)
                 } else {
