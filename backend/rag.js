@@ -1,7 +1,8 @@
 /**
  * rag.js
  * ------------------------------------------------------------------
- * This file contains the implementation of the retrieveRelevantChunks function, which retrieves relevant chunks of text from a database based on a given query.
+ * This file contains the implementation of the retrieveRelevantChunks function,
+ * which retrieves relevant chunks of text from a database based on a given query.
  * It uses the Neon database client and the AI embedding model to perform semantic search.
  * ------------------------------------------------------------------
  */
