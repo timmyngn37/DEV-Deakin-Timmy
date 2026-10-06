@@ -456,7 +456,7 @@ function ChatBot() {
                         {!isPaid && (
                             <div className="missions-upgrade-card">
                                 <div className="upgrade-callout-text">
-                                    Want <strong>30 credits/day</strong> and priority responses?
+                                    Want <strong>30 credits</strong> and priority responses?
                                 </div>
                                 <Link to="/pricing" className="upgrade-link-btn">
                                     Upgrade to Paid Plan
