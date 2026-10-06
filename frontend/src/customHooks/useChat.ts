@@ -140,7 +140,7 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                                 return [
                                     { id: `${turn.id}-user`, role: 'user' as const, content: turn.userMessage, timestamp, status: 'sent' as const },
                                     {
-                                        id: `${turn.id}-assistant`,
+                                        id: turn.id,
                                         role: 'assistant' as const,
                                         content: turn.assistantMessage,
                                         timestamp,
@@ -233,7 +233,7 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                             return [
                                 { id: `${turn.id}-user`, role: 'user' as const, content: turn.userMessage, timestamp, status: 'sent' as const },
                                 {
-                                    id: `${turn.id}-assistant`,
+                                    id: turn.id,
                                     role: 'assistant' as const,
                                     content: turn.assistantMessage,
                                     timestamp,
