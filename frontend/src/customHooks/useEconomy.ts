@@ -84,7 +84,7 @@ export function useEconomy(token: string | null, isPaid: boolean) {
         currentPage: 1,
     })
 
-    const [, startTransition] = useTransition()
+    const [isClaimPending, startTransition] = useTransition()
 
     const [optimisticEconomy, setOptimisticEconomy] = useOptimistic(
         economy,
@@ -150,7 +150,12 @@ export function useEconomy(token: string | null, isPaid: boolean) {
         }
 
         const target = economy.missions.find((m) => m.id === id)
-        if (!target || target.claimed || target.progress < target.target) return
+        if (
+            !target ||
+            target.claimed ||
+            target.progress < target.target ||
+            isClaimPending
+        ) return
 
         startTransition(async () => {
             setOptimisticEconomy({ type: 'CLAIM_MISSION', missionId: id, reward: target.reward })
@@ -224,6 +229,7 @@ export function useEconomy(token: string | null, isPaid: boolean) {
         remainingCredits,
         dispatch,
         claimMission,
+        isClaimPending,
         totalPages,
         currentMissionsPage,
         totalClaimableCount,

@@ -28,6 +28,7 @@ function ChatBot() {
         economy,
         dispatch,
         claimMission,
+        isClaimPending,
         totalPages,
         currentMissionsPage,
         totalClaimableCount,
@@ -378,8 +379,9 @@ function ChatBot() {
                                             type="button"
                                             className="mission-claim-btn"
                                             onClick={() => claimMission(mission.id, showToast)}
+                                            disabled={isClaimPending}
                                         >
-                                            Claim +{mission.reward} ⚡
+                                            {isClaimPending ? 'Claiming...' : `Claim +${mission.reward} ⚡`}
                                         </button>
                                     )
                                 } else {
