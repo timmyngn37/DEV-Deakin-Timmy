@@ -45,18 +45,18 @@ DEV@Deakin/
 
 ## 🛠️ Tech Stack & Advanced React Hooks
 
-- **Frontend**: React 18, TypeScript, Vite, CSS3
+- **Frontend**: React, TypeScript, Vite, CSS3
 - **Backend**: Node.js, Express.js, Drizzle ORM (PostgreSQL/Vector DB)
 - **Database & Auth**: Google Cloud Firestore, Firebase Admin SDK, JWT, Bcrypt, Express Rate Limit
 - **AI & RAG Pipeline**: Google Gemini API (`gemini-3.6-flash`), `@ai-sdk/google`, Vector Embeddings
 - **Email Service**: SendGrid Transactional Email API
 - **Advanced React Hooks**:
-  - `useContext`: Shared auth, user profile, and credit economy state.
+  - `useContext`: Shared authentication, user profile, JWT token, and membership plan state.
   - `useOptimistic`: Instant UI updates for sending messages, flagging responses, and claiming missions.
   - `useReducer`: Structured credit and daily mission state transitions.
   - `useTransition`: Non-blocking async RAG UI updates.
   - `useMemo`: Pagination and notification badge derivations.
-  - `React.lazy` + `<Suspense>`: Route and panel bundle-splitting with loading fallback skeletons.
+  - `React.lazy` + `<Suspense>`: Lazy-loads the AI Assistant route with a loading fallback.
 
 ---
 
@@ -169,7 +169,7 @@ npm run dev
 - `POST /chat/sessions` - Create a new chat session thread.
 - `DELETE /chat/sessions/:sessionId` - Delete session thread and message history.
 - `GET /chat/history?sessionId=X&page=1&limit=20` - Fetch paginated chat history.
-- `POST /chat/flag` - Flag an assistant response, escalate to Firestore, and award +3 bonus credits.
+- `POST /chat/flag` - Flag an assistant response, escalate it to Firestore, and complete the Quality Sentinel mission so its +3 credit reward becomes claimable.
 
 ### Economy & Daily Missions
 
@@ -178,7 +178,8 @@ npm run dev
 
 ### Admin & Ingestion
 
-- `POST /admin/ingest-pdf` - Protected route (`timmynguyen01062006@gmail.com`) to upload PDFs/text, generate embeddings, and update the vector corpus.
+- Dynamic admin ingestion is currently a work in progress and is disabled in the runtime API.
+- The approved corpus is currently ingested offline using `backend/db/ingest-pdf.ts`.
 
 ---
 

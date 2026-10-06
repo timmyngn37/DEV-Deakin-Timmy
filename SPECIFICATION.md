@@ -27,10 +27,10 @@ Answers are strictly restricted to three approved domains:
 ### Technical RAG Architecture
 - **Corpus & Vector Database**: Hand-curated domain context chunks stored in a backend vector store.
 - **Backend-Driven Execution**: All vector similarity calculations and Google Gemini API calls (`gemini-3.6-flash`) execute server-side via `backend/server.js`. Zero API keys or raw corpus logic are exposed to the browser.
-- **Corpus Ingestion Route**: `/admin/ingest-pdf` allows authenticated admin users (`timmynguyen01062006@gmail.com`) to upload corpus PDFs or raw text to generate embeddings via `@ai-sdk/google` and append new chunks to the vector database.
+- **Corpus Ingestion**: The current approved knowledge base is hand-curated and ingested offline using `backend/db/ingest-pdf.ts`. Dynamic admin ingestion through `/admin/ingest-pdf` is retained as a work-in-progress extension and is not enabled in the current runtime API.
 
 ### Advanced React Patterns & UX Polish
-- **Lazy Loading**: The `<ChatPanel>` component is split from the main bundle using `React.lazy()` and wrapped in `<Suspense>` to reduce initial load cost.
+- **Lazy Loading**: The `ChatBot` route is loaded with `React.lazy()` in `App.tsx` and wrapped in `<Suspense>`, reducing the initial application bundle cost.
 - **Non-Blocking `useTransition`**: Message dispatch actions execute within `startTransition()`. Gemini API round-trips mark UI updates as non-urgent so input field typing remains 100% fluid and responsive while queries process.
 - **Optimistic Message Sending (`useOptimistic`)**: Appends the user message immediately with a `status: "pending"` state. Confirms upon HTTP 200 return or rolls back on error.
 - **Paginated History & Scroll-to-Top**: Chat history fetches in pages of 20 turns (`/chat/history?sessionId=X&page=Y&limit=20`). Infinite scroll triggers `loadOlderHistory()` at `scrollTop === 0` without interrupting the active thread.
@@ -48,7 +48,7 @@ Provides manual user override and human fallback when the AI produces unhelpful,
 - **Flagging Modal**: Captures structured reasons (`unhelpful`, `inaccurate`, `out_of_scope`, `needs_human`) and optional user text notes.
 - **Optimistic Flagging (`useOptimistic`)**: Submitting a flag instantly switches the UI tag on the target bubble to `🚩 Flagged ({reason})`.
 - **Backend Escalation (`/chat/flag`)**: Stores the flagged payload in Firestore collection `flaggedMessages` with status `pending_review`.
-- **Mission & Economy Integration**: Successfully flagging a response awards **+3 bonus credits** and automatically advances Mission `m3` (*Quality Sentinel*).
+- **Mission & Economy Integration**: Successfully flagging a response completes Mission `m3` (Quality Sentinel). The user must then explicitly claim the mission reward through `/missions/claim`, which awards +3 credits.
 
 ---
 
@@ -58,9 +58,10 @@ Provides manual user override and human fallback when the AI produces unhelpful,
 Gates assistant usage with a daily credit economy integrated into membership plans (Free vs. Paid), driving daily user engagement without arbitrary hard query caps.
 
 ### Credit Allocation
-- **Free Plan Baseline**: 5 Credits / day.
-- **Paid Plan Baseline**: 30 Credits / day.
-- **Query Cost**: 1 Credit per assistant question.
+- **Free Plan Initial Allowance**: New free accounts start with 5 credits.
+- **Paid Plan Allowance**: Upgrading to the Paid plan sets the account balance to 30 credits.
+- **Query Cost**: 1 credit per assistant question.
+- **Daily Behaviour**: Credit balances carry over between days. Daily mission progress resets each day, providing renewable credits through mission rewards.
 
 ### Mission Matrix (4 Active Missions)
 
@@ -84,11 +85,12 @@ Gates assistant usage with a daily credit economy integrated into membership pla
 The diagram below traces how a membership plan's credit baseline governs assistant usage, how the assistant and the missions/flagging systems feed back into each other, and how a flag both escalates to a human and advances the credit economy.
 
 **Flow summary:**
-1. The user's **Membership Plan** (Free vs. Paid) sets the daily **Baseline Credits** (5 vs. 30), which fund the **AI Assistant Chatbot**.
-2. Each assistant query deducts **1 credit**, and valid non-refusal queries also feed progress into the **Daily Missions Economy** (`m2`, `m4`).
-3. From any assistant bubble, the user can trigger **Flag / Escalate**, handed off to the **Response Flagging & Manual Override** feature.
-4. Flagging opens the **Flagging Modal**, which can route to the **Human Escalation Flow**.
-5. A successful flag submission advances mission `m3` (*Quality Sentinel*), crediting **+3 ⚡** back into the **Daily Missions Economy**, closing the loop.
+1. A new Free account begins with 5 credits; upgrading to Paid sets the balance to 30 credits.
+2. Each assistant query deducts 1 credit.
+3. Valid queries advance the relevant daily missions (`m2` or `m4`).
+4. Flagging a response stores a human-review escalation and completes `m3`.
+5. Completed mission rewards are explicitly claimed through `/missions/claim`, adding credits back to the persistent balance.
+6. Mission progress resets daily, while unused credits carry over.
 
 ---
 
@@ -102,5 +104,5 @@ The diagram below traces how a membership plan's credit baseline governs assista
 | **`useTransition`** | `useChat.ts` & `useEconomy.ts` | Wraps async message dispatches and mission claims in `startTransition()`, keeping user text fields and UI controls responsive during network requests. |
 | **`useMemo`** | `useEconomy.ts` | Memoizes mission pagination derivations (`totalPages`, `currentMissionsPage`, `totalClaimableCount`, `hasClaimableOnNextPages`, `hasClaimableOnPrevPages`). |
 | **`useEffect`** | `useChat.ts` & `useEconomy.ts` | **(1) Session Lifecycle**: Fetches history and session threads on mount.<br>**(2) Logout Cleanup**: Wipes all messages, missions, pagination, and `localStorage` keys immediately when `token === null`. |
-| **`React.lazy` + `<Suspense>`** | `App.tsx` & `ChatBot.tsx` | Lazy-loads `<ChatPanel>` and `<MissionsPanel>` bundles. Renders per-message pending skeletons (`Thinking...`) during active RAG requests. |
+| **`React.lazy` + `<Suspense>`** | `App.tsx` | Lazy-loads the `ChatBot` route and provides a route-level fallback while its bundle loads. |
 | **Custom Hooks** | `useChat.ts` & `useEconomy.ts` | Abstract entire async chat lifecycle and credit economy pipelines into reusable, clean custom hooks. |
