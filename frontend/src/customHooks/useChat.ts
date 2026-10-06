@@ -118,7 +118,7 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
         }
         let isMounted = true
 
-        // Xóa tin nhắn cũ ngay lập tức để tránh hiện "bóng ma" tin nhắn của session trước
+        // Clear previous messages immediately to prevent stale messages from the previous session appearing
         setMessages([])
         setHistoryPage(1)
         setHasMoreHistory(true)
@@ -328,8 +328,8 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                     dispatchEconomy({
                         type: 'SET_INITIAL_DATA',
                         payload: {
-                            credits: data.remainingCredits ?? (credits - 1),
-                            streakDays: data.streakDays ?? 1, // Sửa bug: Ưu tiên lấy streakDays từ backend nếu có
+                            credits: data.remainingCredits,
+                            streakDays: data.streakDays,
                             missions: data.missions,
                         },
                     })
@@ -388,14 +388,14 @@ export function useChat(token: string | null, credits: number, dispatchEconomy: 
                     dispatchEconomy({
                         type: 'SET_INITIAL_DATA',
                         payload: {
-                            credits: data.remainingCredits ?? (credits + 3), // Sửa: Ưu tiên credits từ server
-                            streakDays: data.streakDays ?? 1, // Sửa bug: Không tự ý reset streak về 1
+                            credits,
+                            streakDays: data.streakDays,
                             missions: data.missions,
                         },
                     })
                 }
 
-                setFlagSuccessToast('Response flagged & escalated to Timmy Nguyen! (+3 credits earned)')
+                setFlagSuccessToast('Response flagged & escalated to Timmy Nguyen! Mission reward ready to claim.')
                 setTimeout(() => setFlagSuccessToast(''), 4000)
             } catch (err) {
                 alert(err instanceof Error ? err.message : 'Could not submit flag.')
